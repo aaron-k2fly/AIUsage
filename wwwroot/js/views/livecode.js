@@ -194,7 +194,7 @@ window.Views.livecode = (function () {
     if (!listEl) return;
     if (!state.jiraConfigured) {
       listEl.innerHTML = `<span class="muted">JIRA isn’t configured. Add your site, email and token in
-        <a href="#settings">Settings</a> to see assigned tickets. You can still pick a folder and start a session.</span>`;
+        <a href="#settings">Settings</a> to see assigned tickets — a ticket must be selected to start a session.</span>`;
       return;
     }
     try {
@@ -274,8 +274,8 @@ window.Views.livecode = (function () {
     const stopBtn = document.getElementById('lc-stop');
     const resumeBtn = document.getElementById('lc-resume');
     const resetBtn = document.getElementById('lc-reset');
-    // Start needs a folder + the CLI, and is disabled while a session runs.
-    if (start) start.disabled = state.running || !state.folder || !state.claudeInstalled;
+    // Start needs a selected ticket + a folder + the CLI, and is disabled while a session runs.
+    if (start) start.disabled = state.running || !state.ticket || !state.folder || !state.claudeInstalled;
     if (stopBtn) stopBtn.disabled = !state.running;
     // Resume continues the previous conversation — only when idle and one exists.
     if (resumeBtn) resumeBtn.disabled = state.running || !state.canResume || !state.claudeInstalled;
@@ -399,7 +399,7 @@ window.Views.livecode = (function () {
     try {
       const r = await Bridge.call('livecode.start', {
         shell: state.shell, folder: state.folder,
-        model: state.model, agent: state.agent,
+        model: state.model, agent: state.agent, agentsDir: state.agentsDir,
         ticketKey: state.ticket ? state.ticket.key : null,
         ticketSummary: state.ticket ? state.ticket.summary : null,
         autoApprove: state.autoApprove,
@@ -410,6 +410,7 @@ window.Views.livecode = (function () {
       state.canResume = true;
       updateButtons();
       if (r && r.fellBack) App.toast('Git Bash not found — using PowerShell instead.', true);
+      if (r && r.agentsCopied > 0) App.toast(`Loaded ${r.agentsCopied} agent(s) from your Agents folder into .claude/agents.`);
       if (r && r.kickoff) App.toast(`Starting Claude Code on ${state.ticket.key} (linked to the ticket)…`);
       pollMetrics(); // immediate refresh; the page-level timer keeps it updated
       t.focus();
@@ -462,6 +463,7 @@ window.Views.livecode = (function () {
     try {
       const r = await Bridge.call('livecode.reset', {
         shell: state.shell, folder: state.folder, model: state.model, agent: state.agent,
+        agentsDir: state.agentsDir,
         ticketKey: state.ticket ? state.ticket.key : null,
         ticketSummary: state.ticket ? state.ticket.summary : null,
         autoApprove: state.autoApprove, bypass: state.bypass,

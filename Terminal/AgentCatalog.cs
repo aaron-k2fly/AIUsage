@@ -45,6 +45,41 @@ public static class AgentCatalog
         return result.OrderBy(a => a.Name, StringComparer.OrdinalIgnoreCase).ToList();
     }
 
+    /// <summary>
+    /// Make the custom Agents-folder agents usable in the session: copy their <c>*.md</c> into the
+    /// working folder's <c>.claude/agents/</c> (which Claude Code discovers for <c>--agent</c>) before
+    /// the session starts. Existing project agents are NOT overwritten (avoids clobbering the repo's
+    /// own). Returns how many files were copied.
+    /// </summary>
+    public static int SyncCustomAgents(string? customDir, string? workingFolder)
+    {
+        if (string.IsNullOrWhiteSpace(customDir) || string.IsNullOrWhiteSpace(workingFolder)) return 0;
+
+        var dest = Path.Combine(workingFolder!, ".claude", "agents");
+        var sources = new[] { customDir!, Path.Combine(customDir!, ".claude", "agents") };
+        var copied = 0;
+
+        foreach (var src in sources)
+        {
+            if (!Directory.Exists(src)) continue;
+            foreach (var file in Directory.EnumerateFiles(src, "*.md", SearchOption.TopDirectoryOnly))
+            {
+                var target = Path.Combine(dest, Path.GetFileName(file));
+                try
+                {
+                    if (File.Exists(target)) continue; // never clobber an agent already in the project
+                    if (string.Equals(Path.GetFullPath(file), Path.GetFullPath(target), StringComparison.OrdinalIgnoreCase))
+                        continue; // custom folder already IS the project agents dir
+                    Directory.CreateDirectory(dest);
+                    File.Copy(file, target);
+                    copied++;
+                }
+                catch { /* skip unreadable/locked files */ }
+            }
+        }
+        return copied;
+    }
+
     /// <summary>Pull name/description from a leading <c>---</c> frontmatter block. Tolerant of quotes and missing fields.</summary>
     private static (string? Name, string? Description) ParseFrontmatter(string file)
     {

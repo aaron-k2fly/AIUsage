@@ -179,6 +179,15 @@ end of this section) and merging `LIVE-CODE-SESSION` → `main` once happy.
   status **Closed / Done / Ready for Release** (`ExcludedTicketStatuses`, case-insensitive,
   filtered client-side to avoid JQL errors on instances lacking a status name), then shows the top 3.
 
+### Enhancements 2026-07-14 (round 9): ticket required + custom agents actually run
+- **Start now requires a selected ticket** (in addition to a folder + CLI). `updateButtons` gates it;
+  the JIRA-not-configured note says a ticket must be selected.
+- **Custom Agents folder is now actually usable.** `--agent <name>` only resolves agents in
+  `.claude/agents`, so `StartTicketSession`/reset call `AgentCatalog.SyncCustomAgents(agentsDir, folder)`
+  BEFORE the kickoff — copying the folder's `*.md` (and its `.claude/agents`) into the working folder's
+  `.claude/agents` (never overwriting existing ones). Returns `agentsCopied` (toasted). Then the
+  selected agent runs against the ticket via `--agent`.
+
 ### M6 done — docs & polish
 - `CLAUDE.md` + `.claude/STRUCTURE.md` updated: Live Code architecture, Porta.Pty dependency,
   ConPTY finding, xterm vendoring, event channel, schema v5, new files/actions/events/settings.

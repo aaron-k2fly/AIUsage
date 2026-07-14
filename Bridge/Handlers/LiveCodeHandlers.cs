@@ -308,6 +308,7 @@ public static class LiveCodeHandlers
         var folder = SessionHandlers.GetString(payload, "folder");
         var model = SessionHandlers.GetString(payload, "model");
         var agent = SessionHandlers.GetString(payload, "agent");
+        var agentsDir = SessionHandlers.GetString(payload, "agentsDir");
         var ticketKey = SessionHandlers.GetString(payload, "ticketKey");
         var ticketSummary = SessionHandlers.GetString(payload, "ticketSummary");
         TryGetBool(payload, "autoApprove", out var autoApprove);
@@ -320,6 +321,10 @@ public static class LiveCodeHandlers
 
         if (!string.IsNullOrWhiteSpace(folder) && !Directory.Exists(folder))
             throw new ArgumentException($"Folder not found: {folder}");
+
+        // If a custom Agents folder is set, make its agents available to Claude (copy into the
+        // working folder's .claude/agents) BEFORE the kickoff, so `--agent <name>` resolves them.
+        var agentsCopied = AgentCatalog.SyncCustomAgents(agentsDir, folder);
 
         var shell = ShellResolver.Resolve(shellReq);
 
@@ -363,8 +368,9 @@ public static class LiveCodeHandlers
             catch { /* best-effort; never block the session on a link failure */ }
         }
 
-        return LaunchInPty(router, shell, folder, cols, rows, kickoff, permissionMode, sessionId, model,
+        LaunchInPty(router, shell, folder, cols, rows, kickoff, permissionMode, sessionId, model,
             trackSession: kickoff is not null); // only track the session id when we launched claude
+        return new { shell = shell.Kind, fellBack = shell.FellBack, kickoff = kickoff is not null, agentsCopied };
     }
 
     /// <summary>Spawn the shell in a pseudo-console, wire output/exit/kickoff/auto-approve, and record
