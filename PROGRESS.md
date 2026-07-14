@@ -174,6 +174,11 @@ end of this section) and merging `LIVE-CODE-SESSION` → `main` once happy.
 - **Real-time active sessions**: split out a scan-free `livecode.activeSessions`; the panel now polls it
   every 2s (`pollActive`) while `livecode.metrics` (with the DB scan) stays at 4s for tokens/context.
 
+### Enhancement 2026-07-14 (round 8): hide finished tickets from the picker
+- The "tickets to work on" picker now fetches 25 assigned tickets (newest first) and drops any with
+  status **Closed / Done / Ready for Release** (`ExcludedTicketStatuses`, case-insensitive,
+  filtered client-side to avoid JQL errors on instances lacking a status name), then shows the top 3.
+
 ### M6 done — docs & polish
 - `CLAUDE.md` + `.claude/STRUCTURE.md` updated: Live Code architecture, Porta.Pty dependency,
   ConPTY finding, xterm vendoring, event channel, schema v5, new files/actions/events/settings.

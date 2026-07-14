@@ -21,6 +21,10 @@ public static class LiveCodeHandlers
     /// <summary>Latest tickets assigned to the current user (independent of the user's Fetch JQL).</summary>
     private const string AssignedJql = "assignee = currentUser() ORDER BY updated DESC";
 
+    /// <summary>Finished statuses hidden from the "tickets to work on" picker (case-insensitive).</summary>
+    private static readonly HashSet<string> ExcludedTicketStatuses =
+        new(StringComparer.OrdinalIgnoreCase) { "Closed", "Done", "Ready for Release" };
+
     // One live terminal at a time (v1). Guarded because output/exit callbacks fire on the
     // ConPTY read thread while handlers run on bridge pool threads.
     private static readonly object Gate = new();
@@ -75,15 +79,20 @@ public static class LiveCodeHandlers
             if (client is null)
                 return new { configured = false, tickets = Array.Empty<object>() };
 
-            var page = await client.SearchIssuesAsync(AssignedJql, nextPageToken: null, maxResults: 3);
-            var tickets = page.Issues.Select(i => new
-            {
-                key = i.Key,
-                summary = i.Summary,
-                status = i.Status,
-                issueType = i.IssueType,
-                priority = i.Priority
-            }).ToList();
+            // Fetch a larger page (newest first) then drop finished tickets by status name and take 3.
+            // Filtering client-side (vs JQL) avoids errors if a status name doesn't exist in this instance.
+            var page = await client.SearchIssuesAsync(AssignedJql, nextPageToken: null, maxResults: 25);
+            var tickets = page.Issues
+                .Where(i => i.Status is null || !ExcludedTicketStatuses.Contains(i.Status.Trim()))
+                .Take(3)
+                .Select(i => new
+                {
+                    key = i.Key,
+                    summary = i.Summary,
+                    status = i.Status,
+                    issueType = i.IssueType,
+                    priority = i.Priority
+                }).ToList();
             return new { configured = true, tickets };
         });
 
