@@ -52,6 +52,7 @@ public static class Migrations
                 sprint TEXT,
                 priority TEXT,
                 updated TEXT,
+                description TEXT,
                 last_synced TEXT,
                 fetch_failed INTEGER NOT NULL DEFAULT 0
             );
@@ -96,9 +97,10 @@ public static class Migrations
         AddColumnIfMissing(conn, "Tickets", "sprint", "TEXT");
         AddColumnIfMissing(conn, "Tickets", "priority", "TEXT");
         AddColumnIfMissing(conn, "Tickets", "updated", "TEXT");
+        AddColumnIfMissing(conn, "Tickets", "description", "TEXT");
 
         Seed(conn);
-        SetVersion(conn, 4);
+        SetVersion(conn, 5);
     }
 
     /// <summary>Idempotent ALTER TABLE for columns added after a table's initial CREATE shipped.</summary>

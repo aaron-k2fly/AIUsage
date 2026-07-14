@@ -49,8 +49,27 @@ kicked off from a selected JIRA ticket. Full design in `PLAN-LIVE-CODE-SESSION.m
 - **Still to verify in the GUI** (needs a human at the machine): xterm rendering fidelity, typing,
   and resize. Backend streaming is proven headlessly.
 
-### Next: M3 (launch real `claude` with model/agent + ticket kickoff, strip `ANTHROPIC_API_KEY`),
-M4 (confirmations toggle + bypass confirm), M5 (metrics panel), M6 (Git Bash fallback UX, docs).
+### M3 done (backend verified) — launch Claude Code on the ticket
+- `livecode.start` now spawns the chosen shell then **types a `claude …` command** that works the
+  selected ticket: `claude [--model x] [--agent y] [--permission-mode acceptEdits] '<prompt>'`.
+  Prompt = "Work on JIRA ticket KEY: summary. <description>", flattened to one line (embedded
+  newlines would be read as Enter by the shell) and shell-quoted (single quotes, per-shell escaping).
+- **Ticket description**: schema **v5** adds `Tickets.description`; `JiraClient.FetchIssueAsync`
+  fetches it and flattens the ADF (Atlassian Document Format) tree to plain text;
+  `TicketRepo.UpsertFetched` stores it (COALESCE so bulk search upserts don't wipe it). `livecode.start`
+  fetches the description fresh for the prompt.
+- **Subscription auth**: `ANTHROPIC_API_KEY` is stripped from the child env. Porta.Pty inherits the
+  parent process env and ignores dict-based removal, so `ConPtySession` also **unsets the var in this
+  process** (safe — the app never reads it). Verified headlessly via `--envtest` (`stripped=True`).
+  The var is only stripped, so if a key is present the UI warns + confirms first (`App.confirm` modal;
+  backend reports `apiKeyPresent`).
+- `--envtest` debug verb added; it also incidentally confirms typed-command execution + streaming in
+  interactive cmd.
+- **Still GUI-pending** (needs the machine + a Claude login): real `claude` launch, subscription
+  billing, and kickoff timing under PowerShell/PSReadLine.
+
+### Next: M4 (auto-approve toggle wiring + `bypassPermissions` confirm dialog),
+M5 (metrics panel), M6 (Git Bash fallback UX polish, docs: CLAUDE.md + STRUCTURE.md schema v5 etc.).
 
 ---
 

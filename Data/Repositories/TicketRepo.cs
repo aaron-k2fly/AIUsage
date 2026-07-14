@@ -5,12 +5,15 @@ namespace AIUsage.Data.Repositories;
 public static class TicketRepo
 {
     public static void UpsertFetched(SqliteConnection conn, string key, string? summary, string? status,
-        string? issueType, string? project, string? sprint, string? priority, string? updated)
+        string? issueType, string? project, string? sprint, string? priority, string? updated,
+        string? description = null)
     {
         using var cmd = conn.CreateCommand();
+        // description is COALESCEd: bulk JQL search doesn't fetch it (passes null), so a search-based
+        // upsert must not wipe a description populated by a full single-issue fetch.
         cmd.CommandText = """
-            INSERT INTO Tickets(key, summary, status, issue_type, project, sprint, priority, updated, last_synced, fetch_failed)
-            VALUES ($key, $summary, $status, $type, $project, $sprint, $priority, $updated, $now, 0)
+            INSERT INTO Tickets(key, summary, status, issue_type, project, sprint, priority, updated, description, last_synced, fetch_failed)
+            VALUES ($key, $summary, $status, $type, $project, $sprint, $priority, $updated, $description, $now, 0)
             ON CONFLICT(key) DO UPDATE SET
                 summary = excluded.summary,
                 status = excluded.status,
@@ -19,6 +22,7 @@ public static class TicketRepo
                 sprint = excluded.sprint,
                 priority = excluded.priority,
                 updated = excluded.updated,
+                description = COALESCE(excluded.description, Tickets.description),
                 last_synced = excluded.last_synced,
                 fetch_failed = 0
             """;
@@ -30,6 +34,7 @@ public static class TicketRepo
         cmd.Parameters.AddWithValue("$sprint", (object?)sprint ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$priority", (object?)priority ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$updated", (object?)updated ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$description", (object?)description ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$now", DateTime.UtcNow.ToString("o"));
         cmd.ExecuteNonQuery();
     }

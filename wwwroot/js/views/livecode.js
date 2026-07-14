@@ -11,6 +11,7 @@ window.Views.livecode = (function () {
     autoApprove: false,
     tickets: [],
     jiraConfigured: false,
+    apiKeyPresent: false,
     running: false
   };
 
@@ -34,6 +35,7 @@ window.Views.livecode = (function () {
     state.model = cfg.lastModel || '';
     state.autoApprove = !!cfg.autoApprove;
     state.jiraConfigured = !!cfg.jiraConfigured;
+    state.apiKeyPresent = !!cfg.apiKeyPresent;
 
     // Re-entering the page (navigation re-renders via innerHTML): drop any stale terminal
     // wiring and stop an orphaned backend session so we start clean. Re-attaching to a
@@ -221,6 +223,17 @@ window.Views.livecode = (function () {
 
   async function start() {
     if (!state.folder || state.running) return;
+
+    // If an API key is present, warn before running: the session strips it so the Claude
+    // subscription is used (not metered API billing).
+    if (state.apiKeyPresent) {
+      const ok = await App.confirm(
+        'ANTHROPIC_API_KEY is set in your environment.\n\n' +
+        'This session will run with it removed so your Claude subscription is used ' +
+        '(not metered API billing). Continue?',
+        'Run on subscription');
+      if (!ok) return;
+    }
     saveConfig();
 
     const host = document.getElementById('lc-terminal');
@@ -254,12 +267,18 @@ window.Views.livecode = (function () {
 
     try {
       const r = await Bridge.call('livecode.start', {
-        shell: state.shell, folder: state.folder, cols: t.cols, rows: t.rows
+        shell: state.shell, folder: state.folder,
+        model: state.model, agent: state.agent,
+        ticketKey: state.ticket ? state.ticket.key : null,
+        ticketSummary: state.ticket ? state.ticket.summary : null,
+        autoApprove: state.autoApprove,
+        cols: t.cols, rows: t.rows
       }, 0);
       state.running = true;
       updateStartEnabled();
       document.getElementById('lc-stop').disabled = false;
       if (r && r.fellBack) App.toast('Git Bash not found — using PowerShell instead.', true);
+      if (r && r.kickoff) App.toast(`Starting Claude Code on ${state.ticket.key}…`);
       t.focus();
     } catch (e) {
       App.toast('Failed to start session: ' + e.message, true);

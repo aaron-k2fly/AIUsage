@@ -96,9 +96,19 @@ public sealed class ConPtySession : IDisposable
 
     /// <summary>Current environment with overrides applied (null value removes a variable). The full
     /// set is passed so the child inherits PATH etc.; overriding to null strips a variable
-    /// (e.g. ANTHROPIC_API_KEY, so Claude Code uses subscription auth).</summary>
+    /// (e.g. ANTHROPIC_API_KEY, so Claude Code uses subscription auth).
+    ///
+    /// NOTE: Porta.Pty inherits the parent (this) process's environment and does not honor a
+    /// removal via its options dict, so to actually strip a variable we ALSO unset it in this
+    /// process. That's a process-global side effect, but this app never reads the stripped keys
+    /// (only ANTHROPIC_API_KEY today), so it's safe.</summary>
     private static IDictionary<string, string> BuildEnvironment(IReadOnlyDictionary<string, string?>? overrides)
     {
+        if (overrides is not null)
+            foreach (var (key, value) in overrides)
+                if (value is null)
+                    Environment.SetEnvironmentVariable(key, null); // drop from this process so children don't inherit it
+
         var env = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (System.Collections.DictionaryEntry e in Environment.GetEnvironmentVariables())
         {

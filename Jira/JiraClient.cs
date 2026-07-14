@@ -9,7 +9,8 @@ namespace AIUsage.Jira;
 
 public sealed record JiraIssue(
     string Key, string? Summary, string? Status, string? IssueType,
-    string? Project, string? Sprint, string? Priority, string? Updated);
+    string? Project, string? Sprint, string? Priority, string? Updated,
+    string? Description = null);
 
 public sealed record JiraSearchPage(List<JiraIssue> Issues, string? NextPageToken, bool IsLast);
 
@@ -43,7 +44,7 @@ public sealed class JiraClient
     {
         // Sprint lives in an instance-specific custom field; discover its id once (cached).
         var sprintField = await GetSprintFieldIdAsync();
-        var fieldList = "summary,status,issuetype,project,priority,updated";
+        var fieldList = "summary,status,issuetype,project,priority,updated,description";
         if (sprintField is not null) fieldList += "," + sprintField;
 
         using var response = await SendAsync(HttpMethod.Get,
@@ -104,7 +105,44 @@ public sealed class JiraClient
             GetNestedName(fields, "project"),
             sprintField is not null ? ParseSprint(fields, sprintField) : null,
             GetNestedName(fields, "priority"),
-            GetString(fields, "updated"));
+            GetString(fields, "updated"),
+            ParseDescription(fields)); // null unless the request asked for the description field
+
+    /// <summary>
+    /// JIRA Cloud returns description as an Atlassian Document Format (ADF) tree. Flatten it to
+    /// plain text: concatenate all text nodes, break lines on paragraph/heading/list-item and
+    /// hardBreak nodes. Tolerates the legacy plain-string encoding.
+    /// </summary>
+    private static string? ParseDescription(JsonElement fields)
+    {
+        if (!fields.TryGetProperty("description", out var d)) return null;
+        if (d.ValueKind == JsonValueKind.String) return d.GetString();
+        if (d.ValueKind != JsonValueKind.Object) return null;
+
+        var sb = new StringBuilder();
+        AdfWalk(d, sb);
+        var text = sb.ToString().Trim();
+        return text.Length == 0 ? null : text;
+    }
+
+    private static void AdfWalk(JsonElement node, StringBuilder sb)
+    {
+        if (node.ValueKind != JsonValueKind.Object) return;
+
+        var type = GetString(node, "type");
+        if (type == "text")
+            sb.Append(GetString(node, "text"));
+        else if (type == "hardBreak")
+            sb.Append('\n');
+
+        if (node.TryGetProperty("content", out var content) && content.ValueKind == JsonValueKind.Array)
+            foreach (var child in content.EnumerateArray())
+                AdfWalk(child, sb);
+
+        // Block-level nodes end with a line break so paragraphs/list items don't run together.
+        if (type is "paragraph" or "heading" or "listItem" or "blockquote" or "codeBlock" or "rule")
+            sb.Append('\n');
+    }
 
     /// <summary>
     /// Find the "Sprint" custom-field id for this JIRA instance and cache it in settings.

@@ -1,4 +1,7 @@
+using System.Text;
 using System.Text.Json;
+using AIUsage.Data;
+using AIUsage.Data.Repositories;
 using AIUsage.Jira;
 using AIUsage.Platform;
 using AIUsage.Settings;
@@ -33,7 +36,10 @@ public static class LiveCodeHandlers
             lastFolder = SettingsStore.Get("livecode_last_folder") ?? "",
             lastShell = SettingsStore.Get("livecode_last_shell") ?? "powershell",
             lastModel = SettingsStore.Get("livecode_last_model") ?? "",
-            autoApprove = SettingsStore.Get("livecode_auto_approve") == "1"
+            autoApprove = SettingsStore.Get("livecode_auto_approve") == "1",
+            // If a key is set, the child env will have it stripped (subscription auth); the UI
+            // warns and asks for confirmation before starting.
+            apiKeyPresent = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY"))
         }));
 
         router.Register("livecode.saveConfig", payload =>
@@ -79,12 +85,19 @@ public static class LiveCodeHandlers
             return Task.FromResult<object?>(new { path });
         });
 
-        // --- live terminal (ConPTY) ---
-        // M2 launches a plain shell; the Claude Code launch + ticket kickoff arrive in M3.
-        router.Register("livecode.start", payload =>
+        // --- live terminal ---
+        // Spawns the chosen shell in a pseudo-console, then (if a ticket is selected) types a
+        // `claude …` command that works the ticket. ANTHROPIC_API_KEY is stripped from the child
+        // env so Claude Code uses the subscription, never metered API billing.
+        router.Register("livecode.start", async payload =>
         {
             var shellReq = SessionHandlers.GetString(payload, "shell") ?? "powershell";
             var folder = SessionHandlers.GetString(payload, "folder");
+            var model = SessionHandlers.GetString(payload, "model");
+            var agent = SessionHandlers.GetString(payload, "agent");
+            var ticketKey = SessionHandlers.GetString(payload, "ticketKey");
+            var ticketSummary = SessionHandlers.GetString(payload, "ticketSummary");
+            TryGetBool(payload, "autoApprove", out var autoApprove);
             var cols = (short)GetInt(payload, "cols", 120);
             var rows = (short)GetInt(payload, "rows", 30);
 
@@ -93,21 +106,63 @@ public static class LiveCodeHandlers
 
             var shell = ShellResolver.Resolve(shellReq);
 
+            // Best-effort fresh fetch of the ticket description for the kickoff prompt.
+            string? description = null;
+            if (!string.IsNullOrWhiteSpace(ticketKey))
+            {
+                try
+                {
+                    var client = JiraClient.FromSettings();
+                    if (client is not null)
+                    {
+                        var iss = await client.FetchIssueAsync(ticketKey);
+                        if (iss is not null)
+                        {
+                            ticketSummary ??= iss.Summary;
+                            description = iss.Description;
+                            using var c = Db.Open();
+                            TicketRepo.UpsertFetched(c, iss.Key, iss.Summary, iss.Status, iss.IssueType,
+                                iss.Project, iss.Sprint, iss.Priority, iss.Updated, iss.Description);
+                        }
+                    }
+                }
+                catch { /* kickoff proceeds with the summary the UI already has */ }
+            }
+
+            var kickoff = string.IsNullOrWhiteSpace(ticketKey)
+                ? null
+                : BuildClaudeCommand(shell.Kind, ticketKey!, ticketSummary, description, model, agent, autoApprove);
+
             lock (Gate)
             {
                 StopSession();
                 var session = new ConPtySession();
+                var kicked = 0;
                 session.Output += bytes =>
+                {
                     router.PushEvent("pty.output", new { data = Convert.ToBase64String(bytes) });
+                    // Type the claude command once, after the shell has drawn its first prompt.
+                    if (kickoff is not null && Interlocked.Exchange(ref kicked, 1) == 0)
+                    {
+                        var cmd = kickoff;
+                        _ = Task.Run(async () =>
+                        {
+                            await Task.Delay(600);
+                            session.Write(Encoding.UTF8.GetBytes(cmd + "\r"));
+                        });
+                    }
+                };
                 session.Exited += code =>
                 {
                     router.PushEvent("pty.exit", new { code });
                     lock (Gate) { _session?.Dispose(); _session = null; }
                 };
-                session.Start(shell.Exe, Array.Empty<string>(), folder, envOverrides: null, cols, rows);
+                // Strip the API key so Claude Code falls back to subscription auth.
+                var env = new Dictionary<string, string?> { ["ANTHROPIC_API_KEY"] = null };
+                session.Start(shell.Exe, Array.Empty<string>(), folder, env, cols, rows);
                 _session = session;
             }
-            return Task.FromResult<object?>(new { shell = shell.Kind, fellBack = shell.FellBack });
+            return new { shell = shell.Kind, fellBack = shell.FellBack, kickoff = kickoff is not null };
         });
 
         router.Register("pty.input", payload =>
@@ -138,6 +193,36 @@ public static class LiveCodeHandlers
             return Task.FromResult<object?>(null);
         });
     }
+
+    /// <summary>Build the interactive `claude` invocation typed into the shell to kick off a ticket.</summary>
+    private static string BuildClaudeCommand(string shellKind, string key, string? summary,
+        string? description, string? model, string? agent, bool autoApprove)
+    {
+        var prompt = string.IsNullOrWhiteSpace(summary)
+            ? $"Work on JIRA ticket {key}."
+            : $"Work on JIRA ticket {key}: {summary}.";
+        if (!string.IsNullOrWhiteSpace(description))
+            prompt += " " + description.Trim();
+
+        // Flatten to a single line: the command is TYPED into an interactive shell, and an
+        // embedded newline would be read as Enter (submitting the command early).
+        prompt = prompt.Replace('\r', ' ').Replace('\n', ' ').Replace('\t', ' ');
+        while (prompt.Contains("  ")) prompt = prompt.Replace("  ", " ");
+        prompt = prompt.Trim();
+
+        var sb = new StringBuilder("claude");
+        if (model is "opus" or "sonnet" or "haiku") sb.Append(" --model ").Append(model);
+        if (!string.IsNullOrWhiteSpace(agent)) sb.Append(" --agent ").Append(ShellQuote(shellKind, agent));
+        if (autoApprove) sb.Append(" --permission-mode acceptEdits");
+        sb.Append(' ').Append(ShellQuote(shellKind, prompt));
+        return sb.ToString();
+    }
+
+    /// <summary>Single-quote a value for the target shell (newlines survive inside single quotes in
+    /// both PowerShell and bash, so multi-line prompts pass through intact).</summary>
+    private static string ShellQuote(string shellKind, string s) => shellKind == "bash"
+        ? "'" + s.Replace("'", "'\\''") + "'"
+        : "'" + s.Replace("'", "''") + "'";
 
     private static void StopSession()
     {

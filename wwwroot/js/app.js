@@ -39,6 +39,27 @@
       return isNaN(d) ? '' : d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     },
     refresh: navigate,
+    // Promise<boolean> confirm modal (window.confirm is unreliable in the WebView). Message is
+    // rendered as text (line breaks preserved via CSS), so it's injection-safe.
+    confirm(message, okLabel = 'Continue', danger = false) {
+      return new Promise(resolve => {
+        const ov = document.createElement('div');
+        ov.className = 'modal-overlay';
+        ov.innerHTML = `<div class="modal">
+          <div class="modal-msg"></div>
+          <div class="modal-actions">
+            <button class="btn" data-act="cancel">Cancel</button>
+            <button class="btn ${danger ? 'btn-danger' : 'btn-primary'}" data-act="ok"></button>
+          </div></div>`;
+        ov.querySelector('.modal-msg').textContent = message;
+        ov.querySelector('[data-act="ok"]').textContent = okLabel;
+        const done = v => { ov.remove(); resolve(v); };
+        ov.querySelector('[data-act="ok"]').addEventListener('click', () => done(true));
+        ov.querySelector('[data-act="cancel"]').addEventListener('click', () => done(false));
+        ov.addEventListener('click', e => { if (e.target === ov) done(false); });
+        document.body.appendChild(ov);
+      });
+    },
     // Shared "Export to Excel" — no client timeout since the native save dialog may stay open.
     async exportExcel(action) {
       try {
