@@ -28,6 +28,8 @@ public static class LiveCodeHandlers
     private static string? _activeFolder;       // cwd of the running session (to locate its transcript)
     private static string? _activeSessionId;    // claude --session-id we launched (exact transcript file)
     private static string? _activeModel;        // selected model (drives the context-window size)
+    private static string? _lastSessionId;      // survives Stop, so Resume can `claude --resume <id>`
+    private static string? _lastFolder;
 
     public static void Register(MessageRouter router, PhotinoWindow window)
     {
@@ -168,46 +170,49 @@ public static class LiveCodeHandlers
                 catch { /* best-effort; never block the session on a link failure */ }
             }
 
-            // Best-effort auto-answer only when auto-approving (not bypass — bypass never prompts,
-            // not default — the user answers manually).
-            var watcher = permissionMode == "acceptEdits" ? new PromptWatcher() : null;
+            return LaunchInPty(router, shell, folder, cols, rows, kickoff, permissionMode, sessionId, model,
+                trackSession: kickoff is not null); // only track the session id when we launched claude
+        });
 
-            lock (Gate)
-            {
-                StopSession();
-                var session = new ConPtySession();
-                var kicked = 0;
-                session.Output += bytes =>
-                {
-                    router.PushEvent("pty.output", new { data = Convert.ToBase64String(bytes) });
-                    // Type the claude command once, after the shell has drawn its first prompt.
-                    if (kickoff is not null && Interlocked.Exchange(ref kicked, 1) == 0)
-                    {
-                        var cmd = kickoff;
-                        _ = Task.Run(async () =>
-                        {
-                            await Task.Delay(600);
-                            session.Write(Encoding.UTF8.GetBytes(cmd + "\r"));
-                        });
-                    }
-                    // Auto-approve residual confirmation prompts (best-effort).
-                    var inject = watcher?.Observe(bytes);
-                    if (inject is not null) session.Write(inject);
-                };
-                session.Exited += code =>
-                {
-                    router.PushEvent("pty.exit", new { code });
-                    lock (Gate) { _session?.Dispose(); _session = null; }
-                };
-                // Strip the API key so Claude Code falls back to subscription auth.
-                var env = new Dictionary<string, string?> { ["ANTHROPIC_API_KEY"] = null };
-                session.Start(shell.Exe, Array.Empty<string>(), folder, env, cols, rows);
-                _session = session;
-                _activeFolder = folder;
-                _activeSessionId = kickoff is not null ? sessionId : null; // only known when we launched claude
-                _activeModel = model;
-            }
-            return new { shell = shell.Kind, fellBack = shell.FellBack, kickoff = kickoff is not null };
+        // Resume the previous session's Claude conversation via `claude --resume <id>` (works after
+        // Stop or after the process exited — the conversation history lives in the transcript).
+        router.Register("livecode.resume", payload =>
+        {
+            var shellReq = SessionHandlers.GetString(payload, "shell") ?? "powershell";
+            var folder = SessionHandlers.GetString(payload, "folder");
+            var model = SessionHandlers.GetString(payload, "model");
+            var agent = SessionHandlers.GetString(payload, "agent");
+            TryGetBool(payload, "autoApprove", out var autoApprove);
+            TryGetBool(payload, "bypass", out var bypass);
+            var cols = (short)GetInt(payload, "cols", 120);
+            var rows = (short)GetInt(payload, "rows", 30);
+            var permissionMode = bypass ? "bypassPermissions" : autoApprove ? "acceptEdits" : null;
+
+            string? resumeId, resumeFolder;
+            lock (Gate) { resumeId = _lastSessionId; resumeFolder = _lastFolder; }
+            if (string.IsNullOrWhiteSpace(resumeId))
+                throw new InvalidOperationException("No previous session to resume.");
+
+            folder = string.IsNullOrWhiteSpace(folder) ? resumeFolder : folder;
+            if (!string.IsNullOrWhiteSpace(folder) && !Directory.Exists(folder))
+                throw new ArgumentException($"Folder not found: {folder}");
+
+            var shell = ShellResolver.Resolve(shellReq);
+            var kickoff = BuildResumeCommand(shell.Kind, resumeId!, model, agent, permissionMode);
+            return Task.FromResult<object?>(
+                LaunchInPty(router, shell, folder, cols, rows, kickoff, permissionMode, resumeId!, model, trackSession: true));
+        });
+
+        // Re-attach after navigating away and back: returns the running session's buffered output
+        // (base64) to replay into a fresh terminal, or whether a stopped session can be resumed.
+        router.Register("livecode.attach", _ =>
+        {
+            ConPtySession? s;
+            string? lastId;
+            lock (Gate) { s = _session; lastId = _lastSessionId; }
+            if (s is null)
+                return Task.FromResult<object?>(new { running = false, canResume = lastId is not null });
+            return Task.FromResult<object?>(new { running = true, canResume = true, data = Convert.ToBase64String(s.Snapshot()) });
         });
 
         router.Register("pty.input", payload =>
@@ -318,6 +323,62 @@ public static class LiveCodeHandlers
         _activeFolder = null;
         _activeSessionId = null;
         _activeModel = null;
+    }
+
+    /// <summary>Spawn the shell in a pseudo-console, wire output/exit/kickoff/auto-approve, and record
+    /// the active + last session. Shared by start and resume.</summary>
+    private static object LaunchInPty(MessageRouter router, ResolvedShell shell, string? folder,
+        short cols, short rows, string? kickoff, string? permissionMode, string sessionId, string? model, bool trackSession)
+    {
+        // Best-effort auto-answer only when auto-approving (bypass never prompts; default = manual).
+        var watcher = permissionMode == "acceptEdits" ? new PromptWatcher() : null;
+
+        lock (Gate)
+        {
+            StopSession();
+            var session = new ConPtySession();
+            var kicked = 0;
+            session.Output += bytes =>
+            {
+                router.PushEvent("pty.output", new { data = Convert.ToBase64String(bytes) });
+                // Type the command once, after the shell has drawn its first prompt.
+                if (kickoff is not null && Interlocked.Exchange(ref kicked, 1) == 0)
+                {
+                    var cmd = kickoff;
+                    _ = Task.Run(async () =>
+                    {
+                        await Task.Delay(600);
+                        session.Write(Encoding.UTF8.GetBytes(cmd + "\r"));
+                    });
+                }
+                var inject = watcher?.Observe(bytes);
+                if (inject is not null) session.Write(inject);
+            };
+            session.Exited += code =>
+            {
+                router.PushEvent("pty.exit", new { code });
+                lock (Gate) { _session?.Dispose(); _session = null; }
+            };
+            // Strip the API key so Claude Code falls back to subscription auth.
+            var env = new Dictionary<string, string?> { ["ANTHROPIC_API_KEY"] = null };
+            session.Start(shell.Exe, Array.Empty<string>(), folder, env, cols, rows);
+            _session = session;
+            _activeFolder = folder;
+            _activeModel = model;
+            _activeSessionId = trackSession ? sessionId : null;
+            if (trackSession) { _lastSessionId = sessionId; _lastFolder = folder; }
+        }
+        return new { shell = shell.Kind, fellBack = shell.FellBack, kickoff = kickoff is not null };
+    }
+
+    /// <summary>`claude --resume <id>` (+ model/agent/permission flags) — continues the prior conversation.</summary>
+    private static string BuildResumeCommand(string shellKind, string sessionId, string? model, string? agent, string? permissionMode)
+    {
+        var sb = new StringBuilder("claude --resume ").Append(sessionId);
+        if (model is "opus" or "sonnet" or "haiku") sb.Append(" --model ").Append(model);
+        if (!string.IsNullOrWhiteSpace(agent)) sb.Append(" --agent ").Append(ShellQuote(shellKind, agent));
+        if (permissionMode is not null) sb.Append(" --permission-mode ").Append(permissionMode);
+        return sb.ToString();
     }
 
     /// <summary>Build the interactive `claude` invocation typed into the shell to kick off a ticket.</summary>

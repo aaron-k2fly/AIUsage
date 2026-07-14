@@ -26,6 +26,13 @@ public sealed class ConPtySession : IDisposable
     private int _pid;
     private volatile bool _disposed;
 
+    // Rolling buffer of recent output so the UI can replay the terminal after navigating away and
+    // back (the WebView DOM is destroyed on navigation, but the session keeps running here).
+    private readonly object _bufLock = new();
+    private readonly LinkedList<byte[]> _chunks = new();
+    private long _bufBytes;
+    private const long MaxBuffer = 512 * 1024;
+
     /// <param name="app">Executable to launch (shell or claude).</param>
     /// <param name="args">Arguments passed to <paramref name="app"/>.</param>
     /// <param name="envOverrides">Applied over the current environment; a null value removes a variable.</param>
@@ -82,11 +89,38 @@ public sealed class ConPtySession : IDisposable
             {
                 var chunk = new byte[n];
                 Array.Copy(buffer, chunk, n);
+                AppendToBuffer(chunk);
                 Output?.Invoke(chunk);
             }
         }
         catch (IOException) { /* pipe closed on exit */ }
         catch (ObjectDisposedException) { }
+    }
+
+    private void AppendToBuffer(byte[] chunk)
+    {
+        lock (_bufLock)
+        {
+            _chunks.AddLast(chunk);
+            _bufBytes += chunk.Length;
+            while (_bufBytes > MaxBuffer && _chunks.First is not null)
+            {
+                _bufBytes -= _chunks.First.Value.Length;
+                _chunks.RemoveFirst();
+            }
+        }
+    }
+
+    /// <summary>Recent output bytes, for replaying the terminal on re-attach.</summary>
+    public byte[] Snapshot()
+    {
+        lock (_bufLock)
+        {
+            var outArr = new byte[_bufBytes];
+            var off = 0;
+            foreach (var c in _chunks) { Array.Copy(c, 0, outArr, off, c.Length); off += c.Length; }
+            return outArr;
+        }
     }
 
     public void Dispose()

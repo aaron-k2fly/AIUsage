@@ -17,7 +17,8 @@ window.Views.livecode = (function () {
     plan: '',
     usageResetsAt: '',
     claudeInstalled: true,
-    agentsDir: ''
+    agentsDir: '',
+    canResume: false
   };
 
   const MODELS = [
@@ -53,19 +54,15 @@ window.Views.livecode = (function () {
     state.claudeInstalled = cfg.claudeInstalled !== false;
     state.agentsDir = cfg.lastAgentsDir || '';
 
-    // Re-entering the page (navigation re-renders via innerHTML): drop any stale terminal
-    // wiring and stop an orphaned backend session so we start clean. Re-attaching to a
-    // running session's scrollback is out of scope for v1.
-    if (term.inst || state.running) {
-      Bridge.call('livecode.stop', {}, 0).catch(() => {});
-      teardownTerminal();
-    }
-    // One metrics poller per page view (cleared on leave); avoids stacking across navigations.
+    // Re-entering the page (the router wiped the DOM): detach the old terminal wiring but DON'T
+    // stop the backend session — a running session survives navigation and we reconnect below.
+    disposeTerminalDom();
     if (term.metricsTimer) { clearInterval(term.metricsTimer); term.metricsTimer = null; }
 
     render(el);
     loadTickets();
     loadAgents();
+    reattach(); // reconnect to a session still running from before we navigated away
 
     pollMetrics();
     term.metricsTimer = setInterval(pollMetrics, 4000);
@@ -116,6 +113,7 @@ window.Views.livecode = (function () {
       <div class="panel lc-row">
         <button class="btn btn-primary" id="lc-start" disabled>▶ Start session</button>
         <button class="btn" id="lc-stop" disabled>■ Stop</button>
+        <button class="btn" id="lc-resume" disabled title="Resume the previous session's Claude conversation">▷ Resume</button>
         <span style="flex:1"></span>
         <label class="lc-check"><input type="checkbox" id="lc-auto" ${state.autoApprove ? 'checked' : ''}> Auto-approve confirmations</label>
         <label class="lc-check" title="Runs every action with no confirmation — use only in a folder you trust">
@@ -150,7 +148,7 @@ window.Views.livecode = (function () {
   function wire() {
     document.getElementById('lc-folder').addEventListener('input', e => {
       state.folder = e.target.value.trim();
-      updateStartEnabled();
+      updateButtons();
     });
     document.getElementById('lc-folder').addEventListener('change', () => { saveConfig(); loadAgents(); });
 
@@ -183,6 +181,7 @@ window.Views.livecode = (function () {
 
     document.getElementById('lc-start').addEventListener('click', start);
     document.getElementById('lc-stop').addEventListener('click', stop);
+    document.getElementById('lc-resume').addEventListener('click', resume);
   }
 
   async function loadTickets() {
@@ -216,7 +215,7 @@ window.Views.livecode = (function () {
   function selectTicket(idx) {
     state.ticket = state.tickets[idx] || null;
     document.querySelectorAll('.lc-ticket').forEach((b, i) => b.classList.toggle('selected', i === idx));
-    updateStartEnabled();
+    updateButtons();
   }
 
   async function loadAgents() {
@@ -242,7 +241,7 @@ window.Views.livecode = (function () {
       if (r && r.path) {
         state.folder = r.path;
         document.getElementById('lc-folder').value = r.path;
-        updateStartEnabled();
+        updateButtons();
         saveConfig();
         loadAgents();
       }
@@ -265,11 +264,15 @@ window.Views.livecode = (function () {
     }
   }
 
-  function updateStartEnabled() {
-    const btn = document.getElementById('lc-start');
-    // A folder is enough to open a terminal; a ticket drives the kickoff prompt. The Claude CLI
-    // must be installed to run a session.
-    if (btn) btn.disabled = state.running || !state.folder || !state.claudeInstalled;
+  function updateButtons() {
+    const start = document.getElementById('lc-start');
+    const stopBtn = document.getElementById('lc-stop');
+    const resumeBtn = document.getElementById('lc-resume');
+    // Start needs a folder + the CLI, and is disabled while a session runs.
+    if (start) start.disabled = state.running || !state.folder || !state.claudeInstalled;
+    if (stopBtn) stopBtn.disabled = !state.running;
+    // Resume continues the previous conversation — only when idle and one exists.
+    if (resumeBtn) resumeBtn.disabled = state.running || !state.canResume || !state.claudeInstalled;
   }
 
   function saveConfig() {
@@ -327,6 +330,39 @@ window.Views.livecode = (function () {
     return btoa(bin);
   };
 
+  // Create the xterm terminal, wire I/O, and (on re-attach) replay buffered output. Reused by
+  // start, resume, and reattach.
+  function mountTerminal(replayB64) {
+    const host = document.getElementById('lc-terminal');
+    host.classList.remove('empty');
+    host.textContent = '';
+
+    const t = new Terminal({
+      cursorBlink: true,
+      fontFamily: '"Cascadia Mono", "Consolas", monospace',
+      fontSize: 13,
+      theme: { background: '#1e1e1e', foreground: '#d4d4d4' }
+    });
+    const fit = new FitAddon.FitAddon();
+    t.loadAddon(fit);
+    t.open(host);
+    fit.fit();
+    term.inst = t;
+    term.fit = fit;
+
+    if (replayB64) t.write(b64ToBytes(replayB64)); // replay the running session's recent output
+
+    term.unsub.push(Bridge.on('pty.output', d => { if (d && d.data) t.write(b64ToBytes(d.data)); }));
+    term.unsub.push(Bridge.on('pty.exit', d => {
+      t.write(`\r\n\x1b[90m[process exited with code ${d ? d.code : '?'}]\x1b[0m\r\n`);
+      markStopped();
+    }));
+    t.onData(data => Bridge.call('pty.input', { data: strToB64(data) }, 0).catch(() => {}));
+    term.ro = new ResizeObserver(() => refit());
+    term.ro.observe(host);
+    return t;
+  }
+
   async function start() {
     if (!state.folder || state.running) return;
     if (!state.claudeInstalled) {
@@ -345,36 +381,7 @@ window.Views.livecode = (function () {
       if (!ok) return;
     }
     saveConfig();
-
-    const host = document.getElementById('lc-terminal');
-    host.classList.remove('empty');
-    host.textContent = '';
-
-    const t = new Terminal({
-      cursorBlink: true,
-      fontFamily: '"Cascadia Mono", "Consolas", monospace',
-      fontSize: 13,
-      theme: { background: '#1e1e1e', foreground: '#d4d4d4' }
-    });
-    const fit = new FitAddon.FitAddon();
-    t.loadAddon(fit);
-    t.open(host);
-    fit.fit();
-    term.inst = t;
-    term.fit = fit;
-
-    // Subscribe BEFORE starting so no initial output is missed.
-    term.unsub.push(Bridge.on('pty.output', d => { if (d && d.data) t.write(b64ToBytes(d.data)); }));
-    term.unsub.push(Bridge.on('pty.exit', d => {
-      t.write(`\r\n\x1b[90m[process exited with code ${d ? d.code : '?'}]\x1b[0m\r\n`);
-      markStopped();
-    }));
-
-    t.onData(data => Bridge.call('pty.input', { data: strToB64(data) }, 0).catch(() => {}));
-
-    term.ro = new ResizeObserver(() => refit());
-    term.ro.observe(host);
-
+    const t = mountTerminal();
     try {
       const r = await Bridge.call('livecode.start', {
         shell: state.shell, folder: state.folder,
@@ -386,8 +393,8 @@ window.Views.livecode = (function () {
         cols: t.cols, rows: t.rows
       }, 0);
       state.running = true;
-      updateStartEnabled();
-      document.getElementById('lc-stop').disabled = false;
+      state.canResume = true;
+      updateButtons();
       if (r && r.fellBack) App.toast('Git Bash not found — using PowerShell instead.', true);
       if (r && r.kickoff) App.toast(`Starting Claude Code on ${state.ticket.key} (linked to the ticket)…`);
       pollMetrics(); // immediate refresh; the page-level timer keeps it updated
@@ -406,25 +413,76 @@ window.Views.livecode = (function () {
     } catch { /* element not laid out */ }
   }
 
+  async function resume() {
+    if (state.running || !state.canResume) return;
+    if (!state.claudeInstalled) { App.toast('Claude Code CLI not found — install it to resume.', true); return; }
+    if (state.apiKeyPresent) {
+      const ok = await App.confirm(
+        'ANTHROPIC_API_KEY is set in your environment.\n\n' +
+        'Resume with it removed so your Claude subscription is used (not metered API billing)?',
+        'Resume on subscription');
+      if (!ok) return;
+    }
+    saveConfig();
+    const t = mountTerminal();
+    try {
+      await Bridge.call('livecode.resume', {
+        shell: state.shell, folder: state.folder, model: state.model, agent: state.agent,
+        autoApprove: state.autoApprove, bypass: state.bypass, cols: t.cols, rows: t.rows
+      }, 0);
+      state.running = true;
+      updateButtons();
+      App.toast('Resuming the previous session…');
+      pollMetrics();
+      t.focus();
+    } catch (e) {
+      App.toast('Failed to resume: ' + e.message, true);
+      teardownTerminal();
+    }
+  }
+
+  // On (re)entering the page, reconnect to a session that's still running (replaying its buffered
+  // output), or just enable Resume if a stopped session can be continued.
+  async function reattach() {
+    let at;
+    try { at = await Bridge.call('livecode.attach', {}, 0); } catch { return; }
+    if (!at) return;
+    state.canResume = !!(at.canResume || at.running);
+    if (at.running) {
+      const t = mountTerminal(at.data);
+      state.running = true;
+      Bridge.call('pty.resize', { cols: t.cols, rows: t.rows }, 0).catch(() => {});
+      t.focus();
+    } else {
+      state.running = false;
+    }
+    updateButtons();
+  }
+
   async function stop() {
     try { await Bridge.call('livecode.stop', {}, 0); } catch { /* ignore */ }
+    // Keep the terminal visible with its final output; Resume stays available.
     markStopped();
   }
 
   function markStopped() {
     state.running = false;
     // Leave the page-level metrics timer running — week tokens and active sessions stay live.
-    const stopBtn = document.getElementById('lc-stop');
-    if (stopBtn) stopBtn.disabled = true;
-    updateStartEnabled();
+    updateButtons();
   }
 
-  function teardownTerminal() {
+  // Detach the frontend terminal (unsubscribe + dispose) WITHOUT stopping the backend session,
+  // so a running session survives navigation.
+  function disposeTerminalDom() {
     term.unsub.forEach(fn => { try { fn(); } catch {} });
     term.unsub = [];
     if (term.ro) { try { term.ro.disconnect(); } catch {} term.ro = null; }
     if (term.inst) { try { term.inst.dispose(); } catch {} term.inst = null; }
     term.fit = null;
+  }
+
+  function teardownTerminal() {
+    disposeTerminalDom();
     markStopped();
   }
 

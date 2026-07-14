@@ -151,6 +151,18 @@ end of this section) and merging `LIVE-CODE-SESSION` → `main` once happy.
 - Shared `SessionAggregator.ContextWindow(model)` + `ReadLive(file)` (cwd/model/context); metrics and
   active-sessions both use them.
 
+### Enhancements 2026-07-14 (round 6): persist session across navigation, Resume, Start disabled
+- **Terminal now survives navigation.** Root cause of the "black terminal on return": the router wipes
+  `#content` on navigation AND `load()` was calling `livecode.stop` on re-entry (killing the session).
+  Fixed: navigation no longer stops the backend; `ConPtySession` keeps a rolling 512KB output buffer
+  (`Snapshot()`); on return, `livecode.attach` returns the buffer and the UI replays it into a fresh
+  xterm and reconnects (`reattach()`), so the running session continues.
+- **Resume button** (next to Stop): `livecode.resume` re-launches `claude --resume <lastId>` (+ model/
+  agent/permission flags) in the last folder to continue the prior conversation after Stop/exit.
+  `_lastSessionId`/`_lastFolder` survive Stop; `start`/`resume` share a `LaunchInPty` helper.
+- **Start disabled while running** (and Stop only enabled while running, Resume only when idle + a prior
+  session exists) via a single `updateButtons()`.
+
 ### M6 done — docs & polish
 - `CLAUDE.md` + `.claude/STRUCTURE.md` updated: Live Code architecture, Porta.Pty dependency,
   ConPTY finding, xterm vendoring, event channel, schema v5, new files/actions/events/settings.
