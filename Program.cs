@@ -78,6 +78,11 @@ internal static class Program
                 Console.WriteLine($"bash       -> {bash.Exe} (kind={bash.Kind}, fellBack={bash.FellBack})");
                 break;
 
+            case "--accounttest":
+                var acct = Platform.ClaudeAccount.Read();
+                Console.WriteLine($"plan={acct.Plan ?? "(unknown)"} usageResetsAt={acct.UsageResetsAt?.ToString("o") ?? "(unknown)"}");
+                break;
+
             case "--sql" when args.Length > 1:
                 using (var conn = Db.Open())
                 using (var cmd = conn.CreateCommand())

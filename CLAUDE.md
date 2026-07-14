@@ -18,6 +18,7 @@ dotnet run -- --route <page>            # open the app directly on a page (dashb
 dotnet run -- --pty-test                # headless: spawn a pseudo-console and verify continuous output streaming (Live Code terminal)
 dotnet run -- --envtest                 # headless: verify ANTHROPIC_API_KEY is stripped from a session's child env
 dotnet run -- --shelltest               # headless: print resolved PowerShell / Git Bash executables
+dotnet run -- --accounttest             # headless: print subscription plan + usage-reset date from ~/.claude.json
 
 # Publish the single-file, self-contained exe (see PROGRESS.md for the deliverable path):
 dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -p:DebugType=none -p:DebugSymbols=false

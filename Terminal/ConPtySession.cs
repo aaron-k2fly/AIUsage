@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Porta.Pty;
 
 namespace AIUsage.Terminal;
@@ -22,6 +23,7 @@ public sealed class ConPtySession : IDisposable
 
     private IPtyConnection? _pty;
     private Thread? _reader;
+    private int _pid;
     private volatile bool _disposed;
 
     /// <param name="app">Executable to launch (shell or claude).</param>
@@ -45,6 +47,7 @@ public sealed class ConPtySession : IDisposable
         };
 
         _pty = PtyProvider.SpawnAsync(options, CancellationToken.None).GetAwaiter().GetResult();
+        _pid = _pty.Pid;
         _pty.ProcessExited += (_, e) => { if (!_disposed) Exited?.Invoke(e.ExitCode); };
 
         _reader = new Thread(ReadLoop) { IsBackground = true, Name = "pty-read" };
@@ -90,8 +93,30 @@ public sealed class ConPtySession : IDisposable
     {
         if (_disposed) return;
         _disposed = true;
+        // Kill the whole process TREE, not just the shell — otherwise `claude` (and its node
+        // children) are orphaned and keep running after Stop. taskkill /T terminates descendants.
+        KillTree(_pid);
         try { _pty?.Kill(); } catch { /* already gone */ }
         _pty = null;
+    }
+
+    private static void KillTree(int pid)
+    {
+        if (pid <= 0) return;
+        try
+        {
+            using var p = Process.Start(new ProcessStartInfo
+            {
+                FileName = "taskkill",
+                Arguments = $"/PID {pid} /T /F",
+                CreateNoWindow = true,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            });
+            p?.WaitForExit(3000);
+        }
+        catch { /* taskkill unavailable or process already gone */ }
     }
 
     /// <summary>Current environment with overrides applied (null value removes a variable). The full

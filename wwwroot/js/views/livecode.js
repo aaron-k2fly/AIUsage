@@ -13,7 +13,9 @@ window.Views.livecode = (function () {
     jiraConfigured: false,
     apiKeyPresent: false,
     bypass: false,
-    running: false
+    running: false,
+    plan: '',
+    usageResetsAt: ''
   };
 
   const MODELS = [
@@ -22,6 +24,13 @@ window.Views.livecode = (function () {
     { value: 'sonnet', label: 'Sonnet' },
     { value: 'haiku', label: 'Haiku' }
   ];
+
+  function fmtResetDate(iso) {
+    const d = new Date(iso);
+    if (isNaN(d)) return iso;
+    return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) +
+           ' at ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
 
   async function load(el) {
     let cfg;
@@ -37,6 +46,8 @@ window.Views.livecode = (function () {
     state.autoApprove = !!cfg.autoApprove;
     state.jiraConfigured = !!cfg.jiraConfigured;
     state.apiKeyPresent = !!cfg.apiKeyPresent;
+    state.plan = cfg.plan || '';
+    state.usageResetsAt = cfg.usageResetsAt || '';
 
     // Re-entering the page (navigation re-renders via innerHTML): drop any stale terminal
     // wiring and stop an orphaned backend session so we start clean. Re-attaching to a
@@ -97,9 +108,15 @@ window.Views.livecode = (function () {
       </div>
 
       <div class="panel lc-metrics">
-        <div class="lc-metric"><div class="lc-metric-label">Tokens — this session</div><div class="lc-metric-val" id="lc-tok-session">—</div></div>
-        <div class="lc-metric"><div class="lc-metric-label">Tokens — this week</div><div class="lc-metric-val" id="lc-tok-week">—</div></div>
-        <div class="lc-metric"><div class="lc-metric-label">Context window</div><div class="lc-metric-val" id="lc-ctx">—</div></div>
+        <div class="lc-metric"><div class="lc-metric-label">Plan</div>
+          <div class="lc-metric-val">${App.esc(state.plan || '—')}</div></div>
+        <div class="lc-metric"><div class="lc-metric-label">Tokens — this session</div>
+          <div class="lc-metric-val" id="lc-tok-session">—</div></div>
+        <div class="lc-metric"><div class="lc-metric-label">Tokens — this week</div>
+          <div class="lc-metric-val" id="lc-tok-week">—</div>
+          <div class="lc-metric-sub">${state.usageResetsAt ? 'usage limits reset ' + App.esc(fmtResetDate(state.usageResetsAt)) : ''}</div></div>
+        <div class="lc-metric"><div class="lc-metric-label">Context window</div>
+          <div class="lc-metric-val" id="lc-ctx">—</div></div>
       </div>`;
 
     wire();

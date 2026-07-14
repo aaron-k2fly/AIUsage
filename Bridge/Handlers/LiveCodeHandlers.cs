@@ -34,17 +34,24 @@ public static class LiveCodeHandlers
         // Synchronous handlers return Task.FromResult (no Task.Run) — see the note in
         // SessionHandlers.Register on the null-return / unwrap-overload cancellation trap.
 
-        router.Register("livecode.config", _ => Task.FromResult<object?>(new
+        router.Register("livecode.config", _ =>
         {
-            jiraConfigured = JiraClient.FromSettings() is not null,
-            lastFolder = SettingsStore.Get("livecode_last_folder") ?? "",
-            lastShell = SettingsStore.Get("livecode_last_shell") ?? "powershell",
-            lastModel = SettingsStore.Get("livecode_last_model") ?? "",
-            autoApprove = SettingsStore.Get("livecode_auto_approve") == "1",
-            // If a key is set, the child env will have it stripped (subscription auth); the UI
-            // warns and asks for confirmation before starting.
-            apiKeyPresent = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY"))
-        }));
+            var account = ClaudeAccount.Read();
+            return Task.FromResult<object?>(new
+            {
+                jiraConfigured = JiraClient.FromSettings() is not null,
+                lastFolder = SettingsStore.Get("livecode_last_folder") ?? "",
+                lastShell = SettingsStore.Get("livecode_last_shell") ?? "powershell",
+                lastModel = SettingsStore.Get("livecode_last_model") ?? "",
+                autoApprove = SettingsStore.Get("livecode_auto_approve") == "1",
+                // If a key is set, the child env will have it stripped (subscription auth); the UI
+                // warns and asks for confirmation before starting.
+                apiKeyPresent = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY")),
+                // Subscription package + usage-limit reset, from Claude Code's own config.
+                plan = account.Plan,
+                usageResetsAt = account.UsageResetsAt?.ToString("o")
+            });
+        });
 
         router.Register("livecode.saveConfig", payload =>
         {

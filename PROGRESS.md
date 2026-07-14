@@ -112,6 +112,17 @@ end of this section) and merging `LIVE-CODE-SESSION` → `main` once happy.
   driven by the **selected model** (opus/sonnet → 1M, haiku → 200k), falling back to the transcript's
   model for "Default". Matches Claude Code's own `Context: 30k/1M` indicator.
 
+### Enhancements 2026-07-14 (round 3)
+- **Stop now kills the whole process tree.** `Kill()` ended only the shell, orphaning `claude`/`node`.
+  `ConPtySession.Dispose` now runs `taskkill /PID <pid> /T /F` (tree kill) so Stop halts everything.
+- **Subscription package + usage reset in the metrics panel.** New `Platform/ClaudeAccount.cs` reads
+  Claude Code's `~/.claude.json` for `organizationType` (→ Team/Enterprise/…), `userRateLimitTier`
+  (→ Max 5x/Pro/…) and `planLimitsEndDate` (usage-limit reset). Surfaced via `livecode.config`
+  (`plan`, `usageResetsAt`) → shown as a "Plan" tile ("Team · Max 5x") and an "usage limits reset
+  <date>" sub-line under weekly tokens. **Only non-secret fields are read** — never org name, email,
+  or tokens. Verified via `--accounttest` (`plan=Team · Max 5x`, `usageResetsAt=2026-07-20`).
+- Added `--accounttest` debug verb.
+
 ### M6 done — docs & polish
 - `CLAUDE.md` + `.claude/STRUCTURE.md` updated: Live Code architecture, Porta.Pty dependency,
   ConPTY finding, xterm vendoring, event channel, schema v5, new files/actions/events/settings.
