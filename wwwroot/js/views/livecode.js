@@ -15,7 +15,9 @@ window.Views.livecode = (function () {
     bypass: false,
     running: false,
     plan: '',
-    usageResetsAt: ''
+    usageResetsAt: '',
+    claudeInstalled: true,
+    agentsDir: ''
   };
 
   const MODELS = [
@@ -48,6 +50,8 @@ window.Views.livecode = (function () {
     state.apiKeyPresent = !!cfg.apiKeyPresent;
     state.plan = cfg.plan || '';
     state.usageResetsAt = cfg.usageResetsAt || '';
+    state.claudeInstalled = cfg.claudeInstalled !== false;
+    state.agentsDir = cfg.lastAgentsDir || '';
 
     // Re-entering the page (navigation re-renders via innerHTML): drop any stale terminal
     // wiring and stop an orphaned backend session so we start clean. Re-attaching to a
@@ -56,14 +60,23 @@ window.Views.livecode = (function () {
       Bridge.call('livecode.stop', {}, 0).catch(() => {});
       teardownTerminal();
     }
+    // One metrics poller per page view (cleared on leave); avoids stacking across navigations.
+    if (term.metricsTimer) { clearInterval(term.metricsTimer); term.metricsTimer = null; }
 
     render(el);
     loadTickets();
     loadAgents();
+
+    pollMetrics();
+    term.metricsTimer = setInterval(pollMetrics, 4000);
+    ensureHashCleanup();
   }
 
   function render(el) {
     el.innerHTML = `<h1>Live Code Session</h1>
+
+      ${state.claudeInstalled ? '' : `<div class="panel lc-warn">⚠ Claude Code CLI not found on PATH.
+        Install it from <b>claude.ai/code</b> to run sessions — Start is disabled until it's available.</div>`}
 
       <div class="panel lc-tickets">
         <div class="lc-section-head">Ticket to work on <span class="muted">(latest 3 assigned to you)</span></div>
@@ -95,6 +108,12 @@ window.Views.livecode = (function () {
       </div>
 
       <div class="panel lc-row">
+        <label class="lc-label">Agents folder <span class="muted">(optional)</span></label>
+        <input id="lc-agents-dir" class="lc-grow" placeholder="folder with agent .md files (or a project root); also scans the working folder + ~/.claude/agents" value="${App.esc(state.agentsDir)}">
+        <button class="btn" id="lc-agents-browse">Browse…</button>
+      </div>
+
+      <div class="panel lc-row">
         <button class="btn btn-primary" id="lc-start" disabled>▶ Start session</button>
         <button class="btn" id="lc-stop" disabled>■ Stop</button>
         <span style="flex:1"></span>
@@ -107,16 +126,22 @@ window.Views.livecode = (function () {
         <div id="lc-terminal" class="lc-terminal empty">The live Claude Code terminal appears here once a session is started.</div>
       </div>
 
-      <div class="panel lc-metrics">
-        <div class="lc-metric"><div class="lc-metric-label">Plan</div>
-          <div class="lc-metric-val">${App.esc(state.plan || '—')}</div></div>
-        <div class="lc-metric"><div class="lc-metric-label">Tokens — this session</div>
-          <div class="lc-metric-val" id="lc-tok-session">—</div></div>
-        <div class="lc-metric"><div class="lc-metric-label">Tokens — this week</div>
-          <div class="lc-metric-val" id="lc-tok-week">—</div>
-          <div class="lc-metric-sub">${state.usageResetsAt ? 'usage limits reset ' + App.esc(fmtResetDate(state.usageResetsAt)) : ''}</div></div>
-        <div class="lc-metric"><div class="lc-metric-label">Context window</div>
-          <div class="lc-metric-val" id="lc-ctx">—</div></div>
+      <div class="panel">
+        <div class="lc-metrics">
+          <div class="lc-metric"><div class="lc-metric-label">Plan</div>
+            <div class="lc-metric-val">${App.esc(state.plan || '—')}</div></div>
+          <div class="lc-metric"><div class="lc-metric-label">Tokens — this session</div>
+            <div class="lc-metric-val" id="lc-tok-session">—</div></div>
+          <div class="lc-metric"><div class="lc-metric-label">Tokens — this week</div>
+            <div class="lc-metric-val" id="lc-tok-week">—</div>
+            <div class="lc-metric-sub">${state.usageResetsAt ? 'usage limits reset ' + App.esc(fmtResetDate(state.usageResetsAt)) : ''}</div></div>
+          <div class="lc-metric"><div class="lc-metric-label">Context window</div>
+            <div class="lc-metric-val" id="lc-ctx">—</div></div>
+        </div>
+        <div class="lc-active">
+          <div class="lc-metric-label">Active Claude Code sessions <span class="muted">(top 2, last 5 min)</span></div>
+          <div id="lc-active-list" class="lc-active-list"><span class="muted">—</span></div>
+        </div>
       </div>`;
 
     wire();
@@ -141,6 +166,9 @@ window.Views.livecode = (function () {
 
     document.getElementById('lc-model').addEventListener('change', e => { state.model = e.target.value; saveConfig(); });
     document.getElementById('lc-agent').addEventListener('change', e => { state.agent = e.target.value; });
+    document.getElementById('lc-agents-dir').addEventListener('input', e => { state.agentsDir = e.target.value.trim(); });
+    document.getElementById('lc-agents-dir').addEventListener('change', () => { saveConfig(); loadAgents(); });
+    document.getElementById('lc-agents-browse').addEventListener('click', browseAgents);
     document.getElementById('lc-auto').addEventListener('change', e => { state.autoApprove = e.target.checked; saveConfig(); });
     document.getElementById('lc-bypass').addEventListener('change', async e => {
       if (!e.target.checked) { state.bypass = false; return; }
@@ -195,7 +223,7 @@ window.Views.livecode = (function () {
     const sel = document.getElementById('lc-agent');
     if (!sel) return;
     try {
-      const agents = await Bridge.call('livecode.listAgents', { folder: state.folder });
+      const agents = await Bridge.call('livecode.listAgents', { folder: state.folder, agentsDir: state.agentsDir });
       const keep = state.agent;
       sel.innerHTML = `<option value="">(none — default)</option>` +
         agents.map(a => `<option value="${App.esc(a.name)}" title="${App.esc(a.description || '')}">
@@ -223,16 +251,44 @@ window.Views.livecode = (function () {
     }
   }
 
+  async function browseAgents() {
+    try {
+      const r = await Bridge.call('livecode.pickFolder', { current: state.agentsDir }, 0);
+      if (r && r.path) {
+        state.agentsDir = r.path;
+        document.getElementById('lc-agents-dir').value = r.path;
+        saveConfig();
+        loadAgents();
+      }
+    } catch (e) {
+      App.toast('Folder picker unavailable — type the path instead.', true);
+    }
+  }
+
   function updateStartEnabled() {
     const btn = document.getElementById('lc-start');
-    // A folder is enough to open a terminal; a ticket drives the M3 kickoff prompt.
-    if (btn) btn.disabled = state.running || !state.folder;
+    // A folder is enough to open a terminal; a ticket drives the kickoff prompt. The Claude CLI
+    // must be installed to run a session.
+    if (btn) btn.disabled = state.running || !state.folder || !state.claudeInstalled;
   }
 
   function saveConfig() {
     Bridge.call('livecode.saveConfig', {
-      folder: state.folder, shell: state.shell, model: state.model, autoApprove: state.autoApprove
+      folder: state.folder, shell: state.shell, model: state.model,
+      autoApprove: state.autoApprove, agentsDir: state.agentsDir
     }).catch(() => {});
+  }
+
+  let hashHooked = false;
+  function ensureHashCleanup() {
+    if (hashHooked) return;
+    hashHooked = true;
+    window.addEventListener('hashchange', () => {
+      if ((location.hash || '').slice(1) !== 'livecode' && term.metricsTimer) {
+        clearInterval(term.metricsTimer);
+        term.metricsTimer = null;
+      }
+    });
   }
 
   // --- live terminal (xterm.js over the ConPTY bridge) ---
@@ -246,6 +302,15 @@ window.Views.livecode = (function () {
       set('lc-tok-session', m.active ? App.fmtNum(m.sessionTokens) : '—');
       // Context window is the one real "used of max" limit (200k / 1M).
       set('lc-ctx', m.active ? `${App.fmtNum(m.contextTokens)} of ${App.fmtNum(m.contextSize)} (${m.contextPct}%)` : '—');
+
+      const al = document.getElementById('lc-active-list');
+      if (al) {
+        const list = m.activeSessions || [];
+        al.innerHTML = list.length
+          ? list.map(s => `<span class="lc-active-item"><b>${App.esc(s.folder)}</b>
+              <span class="muted">${App.fmtNum(s.contextTokens)} of ${App.fmtNum(s.contextSize)} (${s.contextPct}%)</span></span>`).join('')
+          : '<span class="muted">none active in the last 5 minutes</span>';
+      }
     } catch { /* transient */ }
   }
 
@@ -264,6 +329,10 @@ window.Views.livecode = (function () {
 
   async function start() {
     if (!state.folder || state.running) return;
+    if (!state.claudeInstalled) {
+      App.toast('Claude Code CLI not found — install it (claude.ai/code) to run a session.', true);
+      return;
+    }
 
     // If an API key is present, warn before running: the session strips it so the Claude
     // subscription is used (not metered API billing).
@@ -320,9 +389,8 @@ window.Views.livecode = (function () {
       updateStartEnabled();
       document.getElementById('lc-stop').disabled = false;
       if (r && r.fellBack) App.toast('Git Bash not found — using PowerShell instead.', true);
-      if (r && r.kickoff) App.toast(`Starting Claude Code on ${state.ticket.key}…`);
-      pollMetrics();
-      term.metricsTimer = setInterval(pollMetrics, 3000);
+      if (r && r.kickoff) App.toast(`Starting Claude Code on ${state.ticket.key} (linked to the ticket)…`);
+      pollMetrics(); // immediate refresh; the page-level timer keeps it updated
       t.focus();
     } catch (e) {
       App.toast('Failed to start session: ' + e.message, true);
@@ -345,7 +413,7 @@ window.Views.livecode = (function () {
 
   function markStopped() {
     state.running = false;
-    if (term.metricsTimer) { clearInterval(term.metricsTimer); term.metricsTimer = null; }
+    // Leave the page-level metrics timer running — week tokens and active sessions stay live.
     const stopBtn = document.getElementById('lc-stop');
     if (stopBtn) stopBtn.disabled = true;
     updateStartEnabled();

@@ -226,6 +226,17 @@ label { display: block; font-size: 12.5px; color: var(--muted); margin: 12px 0 4
 .lc-metric-label { color: var(--muted); font-size: 12.5px; }
 .lc-metric-val { font-size: 20px; font-weight: 650; margin-top: 2px; }
 .lc-metric-sub { color: var(--muted); font-size: 11.5px; margin-top: 3px; }
+.lc-active { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+.lc-active-list { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 6px; font-size: 13px; }
+.lc-active-item { display: inline-flex; gap: 6px; align-items: baseline; }
+
+.lc-warn {
+  border-color: #f0c98a; background: #fdf5e6; color: #8a5a00;
+  display: flex; align-items: center; gap: 6px;
+}
+
+/* Live Code session→ticket links (auto-created on start) — match the AI badge. */
+.badge.livecode { background: #ece9fb; color: #4a3aa7; font-weight: 600; }
 
 /* --- confirm modal --- */
 .btn-danger { background: var(--danger); border-color: var(--danger); color: #fff; }

@@ -11,13 +11,21 @@ public sealed record AgentInfo(string Name, string? Description, string Scope);
 /// </summary>
 public static class AgentCatalog
 {
-    public static List<AgentInfo> List(string? projectDir)
+    /// <param name="projectDir">Working folder; its <c>.claude/agents</c> is scanned.</param>
+    /// <param name="customDir">Optional user-chosen agents folder (scanned directly, and its
+    /// <c>.claude/agents</c> if that's what they pointed at).</param>
+    public static List<AgentInfo> List(string? projectDir, string? customDir = null)
     {
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var result = new List<AgentInfo>();
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
         var sources = new List<(string Dir, string Scope)>();
+        if (!string.IsNullOrWhiteSpace(customDir))
+        {
+            sources.Add((customDir!, "custom"));                              // folder holds *.md directly
+            sources.Add((Path.Combine(customDir!, ".claude", "agents"), "custom")); // …or is a project root
+        }
         if (!string.IsNullOrWhiteSpace(projectDir))
             sources.Add((Path.Combine(projectDir, ".claude", "agents"), "project"));
         sources.Add((Path.Combine(home, ".claude", "agents"), "user"));

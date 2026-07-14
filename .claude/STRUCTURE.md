@@ -37,12 +37,14 @@ AIUsage/
 │       └── LiveCodeHandlers.cs   # Live Code page: tickets, folder, agents, terminal, metrics
 ├── Scanner/
 │   ├── TranscriptScanner.cs  # incremental JSONL walk, offset/WAL bookkeeping
-│   ├── SessionAggregator.cs  # SOLE owner of the transcript schema; aggregates + LastContextTokens
+│   ├── SessionAggregator.cs  # SOLE owner of the transcript schema; aggregates + ReadLive/ContextWindow
+│   ├── ActiveSessions.cs     # top-N recently-active Claude Code sessions (for the metrics panel)
 │   └── TicketKeyInferrer.cs  # branch/cwd/prompt → ticket keys, allowlist filter
 ├── Terminal/                 # Live Code terminal backend
 │   ├── ConPtySession.cs      # pseudo-console session (Porta.Pty wrapper): Start/Write/Resize + Output/Exited
 │   ├── ShellResolver.cs      # PowerShell / Git Bash resolution (fallback to PowerShell)
-│   ├── AgentCatalog.cs       # lists .claude/agents (project + user) with name/description
+│   ├── AgentCatalog.cs       # lists .claude/agents (project + user + custom dir) with name/description
+│   ├── ClaudeCli.cs          # resolves the claude CLI on PATH (install check)
 │   └── PromptWatcher.cs      # best-effort auto-approve: detects prompts, injects Enter
 ├── Platform/
 │   └── FolderDialog.cs       # UI-thread-marshalled Photino folder picker (+ manual fallback)
@@ -97,14 +99,14 @@ AIUsage/
 | `Bridge/Handlers/SettingsHandlers.cs` | Actions `settings.get` (never returns the token value — write-only), `settings.set` (routes token to `SetProtected`; on allowlist change calls `PurgeDisallowedAutoLinks`). `PurgeDisallowedAutoLinks()` removes auto links whose key is outside the allowlist, keeping manual/confirmed links, and cleans orphan tickets. |
 | `Bridge/Handlers/StatsHandlers.cs` | Actions `stats.dashboard` (tiles + all chart datasets: weekly tickets, activity doughnut, top-tickets, token/model weekly, type×activity) and `stats.share` (AI-share denominator via JIRA `approximate-count`, hidden until JIRA configured). |
 | `Bridge/Handlers/ExportHandlers.cs` | Actions `export.sessions/manual/tickets`. `BuildWorkbook(what)` (public/testable) builds the same dataset as the page; saves directly to Downloads (fallback Documents) and reveals via `explorer /select` — **not** Photino `ShowSaveFile` (returns null off the UI thread). |
-| `Bridge/Handlers/LiveCodeHandlers.cs` | `Register(router, window)`. Actions `livecode.config/saveConfig/tickets/listAgents/pickFolder/start/stop/metrics`, `pty.input/resize`. Holds the single `ConPtySession` (guarded). `start` spawns the shell, strips `ANTHROPIC_API_KEY`, types the `claude --session-id <guid> …` kickoff (`BuildClaudeCommand` + `ShellQuote`), wires a `PromptWatcher` in auto-approve mode, tracks the folder + session id so `FindActiveTranscript` reads exactly `<guid>.jsonl`. `metrics` returns week/session tokens + live context %. |
+| `Bridge/Handlers/LiveCodeHandlers.cs` | `Register(router, window)`. Actions `livecode.config/saveConfig/tickets/listAgents/pickFolder/start/stop/metrics`, `pty.input/resize`. Holds the single `ConPtySession` (guarded). `start` spawns the shell, strips `ANTHROPIC_API_KEY`, types the `claude --session-id <guid> …` kickoff (`BuildClaudeCommand` + `ShellQuote`), wires a `PromptWatcher` in auto-approve mode, and — when a ticket is selected — auto-links it via `SessionRepo.LinkLiveCodeSession`. `config` also returns `claudeInstalled` (ClaudeCli) + `lastAgentsDir`; `listAgents` takes a custom `agentsDir`; `metrics` returns week/session tokens, live context % (via `FindActiveTranscript`→`<guid>.jsonl`), and `activeSessions` (top 2). |
 | `Scanner/TranscriptScanner.cs` | `Run()` (lock-guarded) walks each scan root's project dirs for `*.jsonl`, skips files older than `backfill_from`, cheap-prechecks `ScanState` (size+mtime), then inside `BEGIN IMMEDIATE` re-reads state, reads complete lines from the saved offset (`ReadCompleteLines` stops before a partial trailing line), aggregates, upserts sessions + auto links, handles shrink/rewrite via full reparse (`ResetCountersForFile` + `DeleteSessionsNotIn`), saves the new offset, commits. Returns `ScanResult(Sessions, NewFiles, UpdatedFiles, SkippedFiles)`. |
-| `Scanner/SessionAggregator.cs` | `SessionAggregate` (all counters additive) + `Aggregate(lines, filePath)`. **The only code that knows the undocumented Claude Code transcript JSONL schema** — put format-drift fixes here; malformed lines are skipped. Ticket-key source priority: branch(0) → cwd(1) → prompt_text(2). Also `LastContextTokens(file)` (schema-aware; latest assistant turn input+cache tokens for the Live Code context %). |
+| `Scanner/SessionAggregator.cs` | `SessionAggregate` (all counters additive) + `Aggregate(lines, filePath)`. **The only code that knows the undocumented Claude Code transcript JSONL schema** — put format-drift fixes here; malformed lines are skipped. Ticket-key source priority: branch(0) → cwd(1) → prompt_text(2). Also `ReadLive(file)` (cwd/model/context tokens), `LastContextTokens(file)`, and `ContextWindow(model)` (1M, or 200k for Haiku) for the Live Code panels. |
 | `Scanner/TicketKeyInferrer.cs` | Extracts/validates ticket keys against the project-key allowlist; `IsRealBranch` filters out detached-`HEAD`/empty branches. |
 | `Data/Db.cs` | `Initialize(path?)`, `Open()` (WAL + foreign_keys), `DbPath`. `ResolveDefaultPath` is portable-first (next to exe when writable, else `%APPDATA%\AIUsage\`, one-time copy of an existing %APPDATA% DB incl. `-wal`/`-shm`). |
 | `Data/Migrations.cs` | Idempotent `CREATE TABLE IF NOT EXISTS` for all tables + indexes, `AddColumnIfMissing` for post-ship columns (incl. `Tickets.description`), `Seed` (ActivityCategories), `SetVersion` (currently **5**). |
 | `Data/Rows.cs` | `Query(conn, sql, params (name,value)[])` → `List<Dictionary<string,object?>>` (JSON-friendly) and `Scalar(conn, sql)`. |
-| `Data/Repositories/SessionRepo.cs` | `ResetCountersForFile`, `DeleteSessionsNotIn`, `Upsert`, `AddAutoLink`, `AssignTicket`, `ConfirmLink`, `RemoveLink`, `SetReviewState`, `List(conn, filter)`. |
+| `Data/Repositories/SessionRepo.cs` | `ResetCountersForFile`, `DeleteSessionsNotIn`, `Upsert`, `AddAutoLink`, `AssignTicket`, `ConfirmLink`, `RemoveLink`, `SetReviewState`, `List(conn, filter)`, `LinkLiveCodeSession` (placeholder row + `livecode`-source link, before the transcript is scanned). |
 | `Data/Repositories/TicketRepo.cs` | `UpsertFetched` (all JIRA fields incl. `description`, COALESCEd so bulk search doesn't wipe it), `MarkFailed`, `UnsyncedKeys`, `AllKeys`, `List` (ordered `updated DESC, key DESC`). |
 | `Data/Repositories/ManualEntryRepo.cs` | `Create` (auto-creates the Ticket row), `Delete`, `List`, `Categories`. |
 | `Jira/JiraClient.cs` | `FetchIssueAsync` (summary/status/type/project/priority/sprint/updated + **description**, flattening the ADF tree to text; discovers the Sprint custom-field id once, cached in `jira_sprint_field`), `SearchIssuesAsync` (token-paginated `POST /rest/api/3/search/jql`; no description), `TestConnectionAsync` (`/myself`), `ApproximateCountAsync`. 404→dead-key, 401→credential error. |
@@ -148,7 +150,7 @@ AIUsage/
 | `ScanState` | `file_path` PK → `last_offset`, `last_mtime`, `last_size` for incremental scanning. |
 | `Tickets` | `key` PK; JIRA fields summary/status/issue_type/project/sprint/priority/updated/**description**, `last_synced`, `fetch_failed`. |
 | `ActivityCategories` | Seeded list: Generated code, Wrote tests, Refactored, Debugged, Reviewed, Wrote docs, Investigated. |
-| `SessionTicketLinks` | (`session_id`→Sessions ON DELETE CASCADE, `ticket_key`) PK; `source` (auto/manual/confirmed), `inferred_from` (branch/cwd/prompt_text), `category_id`. |
+| `SessionTicketLinks` | (`session_id`→Sessions ON DELETE CASCADE, `ticket_key`) PK; `source` (auto/manual/confirmed/livecode), `inferred_from` (branch/cwd/prompt_text), `category_id`. |
 | `ManualEntries` | `id` PK; ticket_key, entry_date, category_id, description, tool_used, created_at. |
 | `Settings` | `key` PK → `value` (see settings keys below). |
 | `SchemaVersion` | single `version` row. |
@@ -190,6 +192,7 @@ Indexes: `idx_links_ticket`, `idx_manual_ticket`, `idx_sessions_started`.
 | `livecode_last_shell` | Live Code: last-used shell (`powershell`/`bash`). |
 | `livecode_last_model` | Live Code: last-used model (`''`/`opus`/`sonnet`/`haiku`). |
 | `livecode_auto_approve` | Live Code: auto-approve toggle state (`1`/`0`). (Bypass is never persisted.) |
+| `livecode_agents_dir` | Live Code: user-chosen folder to also scan for agent `.md` files. |
 
 ---
 

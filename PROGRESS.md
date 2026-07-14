@@ -131,6 +131,26 @@ end of this section) and merging `LIVE-CODE-SESSION` → `main` once happy.
   real limit as "`<used> of <max> (N%)`" (e.g. `34K of 1M (3%)`). Session & week stay as plain
   counts; the weekly reset date stays; the unreadable 5-hour session reset is not shown.
 
+### Enhancements 2026-07-14 (round 5): active sessions, CLI check, auto-link, agents folder
+- **Top-2 active Claude Code sessions** in the metrics panel: `Scanner/ActiveSessions.cs` scans
+  `~/.claude/projects/**` for transcripts written in the last 5 min, returns the 2 newest with folder
+  (from transcript `cwd`) + context used/max/%. Surfaced via `livecode.metrics` (`activeSessions`).
+  The metrics poller is now **page-level** (every 4s while on the page, cleared on navigate via a
+  hashchange hook) so week tokens + active sessions stay live even with no session running.
+- **Claude CLI install check**: `Terminal/ClaudeCli.cs` resolves `claude` on PATH (+ `~/.local/bin`).
+  `livecode.config` returns `claudeInstalled`; the page shows a warning banner and disables Start when
+  it's missing.
+- **Auto-link ticket ↔ session**: on start with a ticket, `SessionRepo.LinkLiveCodeSession` inserts a
+  placeholder Sessions row (keyed by the launched `--session-id`) + a `SessionTicketLinks` row with
+  source `livecode` (kept by the allowlist purge, which only removes `auto`). The scanner later
+  accumulates the real tokens into the same row (ON CONFLICT(id)). New `.badge.livecode` style.
+- **Agents folder**: `AgentCatalog.List(projectDir, customDir)` now also scans a user-chosen folder
+  (the folder itself and its `.claude/agents`), in addition to the working folder's `.claude/agents`
+  and `~/.claude/agents`. New "Agents folder" input + Browse on the page; persisted as
+  `livecode_agents_dir`; passed to `livecode.listAgents`.
+- Shared `SessionAggregator.ContextWindow(model)` + `ReadLive(file)` (cwd/model/context); metrics and
+  active-sessions both use them.
+
 ### M6 done — docs & polish
 - `CLAUDE.md` + `.claude/STRUCTURE.md` updated: Live Code architecture, Porta.Pty dependency,
   ConPTY finding, xterm vendoring, event channel, schema v5, new files/actions/events/settings.

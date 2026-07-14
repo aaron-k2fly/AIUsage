@@ -44,6 +44,9 @@ public static class LiveCodeHandlers
                 lastShell = SettingsStore.Get("livecode_last_shell") ?? "powershell",
                 lastModel = SettingsStore.Get("livecode_last_model") ?? "",
                 autoApprove = SettingsStore.Get("livecode_auto_approve") == "1",
+                lastAgentsDir = SettingsStore.Get("livecode_agents_dir") ?? "",
+                // Warn on the page if the Claude Code CLI isn't installed.
+                claudeInstalled = ClaudeCli.IsInstalled(),
                 // If a key is set, the child env will have it stripped (subscription auth); the UI
                 // warns and asks for confirmation before starting.
                 apiKeyPresent = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY")),
@@ -58,6 +61,7 @@ public static class LiveCodeHandlers
             SetIfPresent(payload, "folder", "livecode_last_folder");
             SetIfPresent(payload, "shell", "livecode_last_shell");
             SetIfPresent(payload, "model", "livecode_last_model");
+            SetIfPresent(payload, "agentsDir", "livecode_agents_dir");
             if (TryGetBool(payload, "autoApprove", out var auto))
                 SettingsStore.Set("livecode_auto_approve", auto ? "1" : "0");
             return Task.FromResult<object?>(null);
@@ -84,7 +88,8 @@ public static class LiveCodeHandlers
         router.Register("livecode.listAgents", payload =>
         {
             var folder = SessionHandlers.GetString(payload, "folder");
-            var agents = AgentCatalog.List(folder)
+            var agentsDir = SessionHandlers.GetString(payload, "agentsDir");
+            var agents = AgentCatalog.List(folder, agentsDir)
                 .Select(a => new { name = a.Name, description = a.Description, scope = a.Scope });
             return Task.FromResult<object?>(agents);
         });
@@ -150,6 +155,18 @@ public static class LiveCodeHandlers
             var kickoff = string.IsNullOrWhiteSpace(ticketKey)
                 ? null
                 : BuildClaudeCommand(shell.Kind, ticketKey!, ticketSummary, description, model, agent, permissionMode, sessionId);
+
+            // Record the ticket ↔ session link now (before the transcript exists) so working a
+            // ticket via Live Code is captured automatically.
+            if (kickoff is not null && !string.IsNullOrWhiteSpace(folder))
+            {
+                try
+                {
+                    using var conn = Db.Open();
+                    SessionRepo.LinkLiveCodeSession(conn, sessionId, TranscriptPath(folder, sessionId), folder, ticketKey!);
+                }
+                catch { /* best-effort; never block the session on a link failure */ }
+            }
 
             // Best-effort auto-answer only when auto-approving (not bypass — bypass never prompts,
             // not default — the user answers manually).
@@ -253,6 +270,8 @@ public static class LiveCodeHandlers
             }
 
             var contextSize = ContextSizeFor(sizeModel);
+            var activeSessions = ActiveSessions.Top(2, TimeSpan.FromMinutes(5))
+                .Select(a => new { folder = a.Folder, contextTokens = a.ContextTokens, contextSize = a.ContextSize, contextPct = a.Percent });
             return Task.FromResult<object?>(new
             {
                 weekTokens,
@@ -260,7 +279,8 @@ public static class LiveCodeHandlers
                 contextTokens,
                 contextSize,
                 contextPct = contextSize > 0 ? (int)Math.Round(100.0 * contextTokens / contextSize) : 0,
-                active = file is not null
+                active = file is not null,
+                activeSessions
             });
         });
     }
@@ -275,22 +295,21 @@ public static class LiveCodeHandlers
         string? folder, sessionId;
         lock (Gate) { folder = _activeFolder; sessionId = _activeSessionId; }
         if (string.IsNullOrWhiteSpace(folder) || string.IsNullOrWhiteSpace(sessionId)) return null;
-
-        var encoded = folder.Replace(':', '-').Replace('\\', '-').Replace('/', '-');
-        var file = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            ".claude", "projects", encoded, sessionId + ".jsonl");
+        var file = TranscriptPath(folder, sessionId);
         return File.Exists(file) ? file : null;
     }
 
-    /// <summary>Model context window. Current Claude models are 1M except Haiku (200k). Accepts either
-    /// the dropdown alias (opus/sonnet/haiku) or a full transcript model id (claude-haiku-4-5, …).
-    /// Defaults to 1M when unknown, matching the current Opus/Sonnet default.</summary>
-    private static long ContextSizeFor(string? model)
+    /// <summary>Path Claude Code writes a session's transcript to: cwd encoded (':' '\\' '/' → '-')
+    /// under ~/.claude/projects, file named &lt;session-id&gt;.jsonl.</summary>
+    private static string TranscriptPath(string folder, string sessionId)
     {
-        if (string.IsNullOrEmpty(model)) return 1_000_000;
-        return model.Contains("haiku", StringComparison.OrdinalIgnoreCase) ? 200_000 : 1_000_000;
+        var encoded = folder.Replace(':', '-').Replace('\\', '-').Replace('/', '-');
+        return Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            ".claude", "projects", encoded, sessionId + ".jsonl");
     }
+
+    private static long ContextSizeFor(string? model) => SessionAggregator.ContextWindow(model);
 
     private static void StopSession()
     {
