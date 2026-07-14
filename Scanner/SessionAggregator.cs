@@ -157,6 +157,44 @@ public sealed class SessionAggregator(TicketKeyInferrer inferrer)
         }
     }
 
+    /// <summary>
+    /// Live context-window estimate for the Live Code metrics panel: the tokens sent as context on
+    /// the most recent assistant turn (input + cache read + cache creation; output doesn't count
+    /// toward the window). Schema-aware, so it lives here with the rest of the transcript parsing.
+    /// Returns (0, null) if the file has no assistant turn yet.
+    /// </summary>
+    public static (long ContextTokens, string? Model) LastContextTokens(string filePath)
+    {
+        long ctx = 0;
+        string? model = null;
+        try
+        {
+            foreach (var line in File.ReadLines(filePath))
+            {
+                if (string.IsNullOrWhiteSpace(line)) continue;
+                try
+                {
+                    using var doc = JsonDocument.Parse(line);
+                    var root = doc.RootElement;
+                    if (root.ValueKind != JsonValueKind.Object) continue;
+                    if (!TryGetString(root, "type", out var type) || type != "assistant") continue;
+                    if (!root.TryGetProperty("message", out var msg) || msg.ValueKind != JsonValueKind.Object) continue;
+                    if (TryGetString(msg, "model", out var m)) model = m;
+                    if (msg.TryGetProperty("usage", out var usage) && usage.ValueKind == JsonValueKind.Object)
+                    {
+                        var c = GetLong(usage, "input_tokens")
+                              + GetLong(usage, "cache_read_input_tokens")
+                              + GetLong(usage, "cache_creation_input_tokens");
+                        if (c > 0) ctx = c; // most recent non-zero turn wins
+                    }
+                }
+                catch (JsonException) { /* skip truncated/partial line */ }
+            }
+        }
+        catch (IOException) { /* file busy — caller falls back to previous value */ }
+        return (ctx, model);
+    }
+
     private static bool TryGetString(JsonElement el, string name, out string value)
     {
         if (el.TryGetProperty(name, out var p) && p.ValueKind == JsonValueKind.String)

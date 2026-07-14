@@ -219,7 +219,17 @@ window.Views.livecode = (function () {
   }
 
   // --- live terminal (xterm.js over the ConPTY bridge) ---
-  const term = { inst: null, fit: null, unsub: [], ro: null };
+  const term = { inst: null, fit: null, unsub: [], ro: null, metricsTimer: null };
+
+  async function pollMetrics() {
+    try {
+      const m = await Bridge.call('livecode.metrics', {}, 0);
+      const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+      set('lc-tok-week', App.fmtNum(m.weekTokens));
+      set('lc-tok-session', m.active ? App.fmtNum(m.sessionTokens) : '—');
+      set('lc-ctx', m.active ? `≈ ${m.contextPct}% of ${App.fmtNum(m.contextSize)}` : '—');
+    } catch { /* transient */ }
+  }
 
   const b64ToBytes = b64 => {
     const bin = atob(b64);
@@ -293,6 +303,8 @@ window.Views.livecode = (function () {
       document.getElementById('lc-stop').disabled = false;
       if (r && r.fellBack) App.toast('Git Bash not found — using PowerShell instead.', true);
       if (r && r.kickoff) App.toast(`Starting Claude Code on ${state.ticket.key}…`);
+      pollMetrics();
+      term.metricsTimer = setInterval(pollMetrics, 3000);
       t.focus();
     } catch (e) {
       App.toast('Failed to start session: ' + e.message, true);
@@ -315,6 +327,7 @@ window.Views.livecode = (function () {
 
   function markStopped() {
     state.running = false;
+    if (term.metricsTimer) { clearInterval(term.metricsTimer); term.metricsTimer = null; }
     const stopBtn = document.getElementById('lc-stop');
     if (stopBtn) stopBtn.disabled = true;
     updateStartEnabled();

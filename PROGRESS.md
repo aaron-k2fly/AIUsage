@@ -77,8 +77,22 @@ kicked off from a selected JIRA ticket. Full design in `PLAN-LIVE-CODE-SESSION.m
   mode. ANSI-strips output, detects Claude's confirmation prompts (`❯ 1.`, `(y/n)`, etc.) and injects
   Enter with a 1.5s cooldown. Documented as fragile — the permission mode is the robust part.
 
-### Next: M5 (metrics panel: tokens session/week + context %), M6 (Git Bash fallback UX polish,
-docs: CLAUDE.md + STRUCTURE.md schema v5 / new files / actions / settings).
+### M5 done — usage metrics panel
+- `livecode.metrics`: runs a light incremental scan, then returns week tokens (DB, current ISO week),
+  the active session's tokens (DB row for its transcript), and a live context-window estimate.
+- Context %: `SessionAggregator.LastContextTokens(file)` (schema-aware) reads the most recent
+  assistant turn's input+cache tokens; context size = 1M for `[1m]` models else 200k.
+- Active transcript located by encoding the session's cwd the way Claude Code does
+  (`:` `\` `/` → `-`) under `~/.claude/projects/<encoded>`, newest `*.jsonl` since start.
+- Frontend polls `livecode.metrics` every 3s while a session runs; panel shows
+  "Tokens this session / this week" and "≈ N% of <size>".
+
+### Next: M6 — docs (CLAUDE.md + STRUCTURE.md: schema v5, new files/actions/settings, Porta.Pty dep),
+final polish. Git Bash fallback UX already implemented (toast on fallback).
+
+### GUI verification still outstanding (needs a human + Claude login)
+xterm render/typing/resize (M2), real `claude` launch + subscription billing + kickoff timing
+under PowerShell (M3), auto-approve injection hitting real prompts (M4), live metrics values (M5).
 
 ---
 

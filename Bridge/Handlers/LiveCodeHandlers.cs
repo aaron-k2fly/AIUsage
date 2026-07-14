@@ -4,6 +4,7 @@ using AIUsage.Data;
 using AIUsage.Data.Repositories;
 using AIUsage.Jira;
 using AIUsage.Platform;
+using AIUsage.Scanner;
 using AIUsage.Settings;
 using AIUsage.Terminal;
 using Photino.NET;
@@ -24,6 +25,8 @@ public static class LiveCodeHandlers
     // ConPTY read thread while handlers run on bridge pool threads.
     private static readonly object Gate = new();
     private static ConPtySession? _session;
+    private static string? _activeFolder;      // cwd of the running session (to locate its transcript)
+    private static DateTime _activeStartedUtc;
 
     public static void Register(MessageRouter router, PhotinoWindow window)
     {
@@ -172,6 +175,8 @@ public static class LiveCodeHandlers
                 var env = new Dictionary<string, string?> { ["ANTHROPIC_API_KEY"] = null };
                 session.Start(shell.Exe, Array.Empty<string>(), folder, env, cols, rows);
                 _session = session;
+                _activeFolder = folder;
+                _activeStartedUtc = DateTime.UtcNow;
             }
             return new { shell = shell.Kind, fellBack = shell.FellBack, kickoff = kickoff is not null };
         });
@@ -203,6 +208,76 @@ public static class LiveCodeHandlers
             lock (Gate) StopSession();
             return Task.FromResult<object?>(null);
         });
+
+        // Usage metrics for the bottom panel. Tokens come from the transcript DB (a light
+        // incremental scan picks up the live session's new lines); context % is read live from
+        // the active session's transcript. Plan/tier is not shown (not exposed by the CLI).
+        router.Register("livecode.metrics", _ =>
+        {
+            try { new TranscriptScanner().Run(); } catch { /* best-effort refresh */ }
+
+            long weekTokens;
+            using (var conn = Db.Open())
+                weekTokens = Rows.Scalar(conn,
+                    "SELECT COALESCE(SUM(input_tokens + output_tokens), 0) FROM Sessions " +
+                    "WHERE strftime('%Y-%W', started_at) = strftime('%Y-%W', 'now')");
+
+            long sessionTokens = 0, contextTokens = 0, contextSize = 200_000;
+            var file = FindActiveTranscript();
+            if (file is not null)
+            {
+                var (ctx, model) = SessionAggregator.LastContextTokens(file);
+                contextTokens = ctx;
+                contextSize = ContextSizeFor(model);
+                using var conn = Db.Open();
+                var rows = Rows.Query(conn,
+                    "SELECT COALESCE(input_tokens + output_tokens, 0) AS t FROM Sessions WHERE file_path = $f",
+                    ("$f", file));
+                if (rows.Count > 0) sessionTokens = Convert.ToInt64(rows[0]["t"] ?? 0L);
+            }
+
+            return Task.FromResult<object?>(new
+            {
+                weekTokens,
+                sessionTokens,
+                contextTokens,
+                contextSize,
+                contextPct = contextSize > 0 ? (int)Math.Round(100.0 * contextTokens / contextSize) : 0,
+                active = file is not null
+            });
+        });
+    }
+
+    /// <summary>Newest transcript file in the running session's project dir. Claude Code encodes the
+    /// cwd into the folder name under ~/.claude/projects by replacing ':', '\\' and '/' with '-'.</summary>
+    private static string? FindActiveTranscript()
+    {
+        string? folder;
+        DateTime start;
+        lock (Gate) { folder = _activeFolder; start = _activeStartedUtc; }
+        if (string.IsNullOrWhiteSpace(folder)) return null;
+
+        var encoded = folder.Replace(':', '-').Replace('\\', '-').Replace('/', '-');
+        var dir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "projects", encoded);
+        if (!Directory.Exists(dir)) return null;
+
+        return new DirectoryInfo(dir).EnumerateFiles("*.jsonl")
+            .Where(f => f.LastWriteTimeUtc >= start.AddSeconds(-120))
+            .OrderByDescending(f => f.LastWriteTimeUtc)
+            .Select(f => f.FullName)
+            .FirstOrDefault();
+    }
+
+    /// <summary>Model context window: 1M for the [1m] variants, otherwise 200k.</summary>
+    private static long ContextSizeFor(string? model) =>
+        model is not null && model.Contains("1m", StringComparison.OrdinalIgnoreCase) ? 1_000_000 : 200_000;
+
+    private static void StopSession()
+    {
+        _session?.Dispose();
+        _session = null;
+        _activeFolder = null;
     }
 
     /// <summary>Build the interactive `claude` invocation typed into the shell to kick off a ticket.</summary>
@@ -234,12 +309,6 @@ public static class LiveCodeHandlers
     private static string ShellQuote(string shellKind, string s) => shellKind == "bash"
         ? "'" + s.Replace("'", "'\\''") + "'"
         : "'" + s.Replace("'", "''") + "'";
-
-    private static void StopSession()
-    {
-        _session?.Dispose();
-        _session = null;
-    }
 
     private static int GetInt(JsonElement payload, string name, int dflt) =>
         payload.ValueKind == JsonValueKind.Object && payload.TryGetProperty(name, out var p)
