@@ -98,8 +98,12 @@ public static class LiveCodeHandlers
             var ticketKey = SessionHandlers.GetString(payload, "ticketKey");
             var ticketSummary = SessionHandlers.GetString(payload, "ticketSummary");
             TryGetBool(payload, "autoApprove", out var autoApprove);
+            TryGetBool(payload, "bypass", out var bypass);
             var cols = (short)GetInt(payload, "cols", 120);
             var rows = (short)GetInt(payload, "rows", 30);
+
+            // bypass (confirmed in the UI) > auto-approve (acceptEdits) > default (manual prompts).
+            var permissionMode = bypass ? "bypassPermissions" : autoApprove ? "acceptEdits" : null;
 
             if (!string.IsNullOrWhiteSpace(folder) && !Directory.Exists(folder))
                 throw new ArgumentException($"Folder not found: {folder}");
@@ -131,7 +135,11 @@ public static class LiveCodeHandlers
 
             var kickoff = string.IsNullOrWhiteSpace(ticketKey)
                 ? null
-                : BuildClaudeCommand(shell.Kind, ticketKey!, ticketSummary, description, model, agent, autoApprove);
+                : BuildClaudeCommand(shell.Kind, ticketKey!, ticketSummary, description, model, agent, permissionMode);
+
+            // Best-effort auto-answer only when auto-approving (not bypass — bypass never prompts,
+            // not default — the user answers manually).
+            var watcher = permissionMode == "acceptEdits" ? new PromptWatcher() : null;
 
             lock (Gate)
             {
@@ -151,6 +159,9 @@ public static class LiveCodeHandlers
                             session.Write(Encoding.UTF8.GetBytes(cmd + "\r"));
                         });
                     }
+                    // Auto-approve residual confirmation prompts (best-effort).
+                    var inject = watcher?.Observe(bytes);
+                    if (inject is not null) session.Write(inject);
                 };
                 session.Exited += code =>
                 {
@@ -196,7 +207,7 @@ public static class LiveCodeHandlers
 
     /// <summary>Build the interactive `claude` invocation typed into the shell to kick off a ticket.</summary>
     private static string BuildClaudeCommand(string shellKind, string key, string? summary,
-        string? description, string? model, string? agent, bool autoApprove)
+        string? description, string? model, string? agent, string? permissionMode)
     {
         var prompt = string.IsNullOrWhiteSpace(summary)
             ? $"Work on JIRA ticket {key}."
@@ -213,7 +224,7 @@ public static class LiveCodeHandlers
         var sb = new StringBuilder("claude");
         if (model is "opus" or "sonnet" or "haiku") sb.Append(" --model ").Append(model);
         if (!string.IsNullOrWhiteSpace(agent)) sb.Append(" --agent ").Append(ShellQuote(shellKind, agent));
-        if (autoApprove) sb.Append(" --permission-mode acceptEdits");
+        if (permissionMode is not null) sb.Append(" --permission-mode ").Append(permissionMode);
         sb.Append(' ').Append(ShellQuote(shellKind, prompt));
         return sb.ToString();
     }

@@ -68,8 +68,17 @@ kicked off from a selected JIRA ticket. Full design in `PLAN-LIVE-CODE-SESSION.m
 - **Still GUI-pending** (needs the machine + a Claude login): real `claude` launch, subscription
   billing, and kickoff timing under PowerShell/PSReadLine.
 
-### Next: M4 (auto-approve toggle wiring + `bypassPermissions` confirm dialog),
-M5 (metrics panel), M6 (Git Bash fallback UX polish, docs: CLAUDE.md + STRUCTURE.md schema v5 etc.).
+### M4 done — confirmations toggle
+- Permission mode at launch: **bypass** (confirmed) → `bypassPermissions` > **auto-approve** →
+  `acceptEdits` > default (manual). `livecode.start` reads `autoApprove` + `bypass`.
+- `bypassPermissions` requires an explicit danger confirm (`App.confirm(..., danger)`) before the box
+  stays checked; bypass never persists (resets each page load).
+- **Best-effort auto-answer** (`Terminal/PromptWatcher.cs`): only active in auto-approve (acceptEdits)
+  mode. ANSI-strips output, detects Claude's confirmation prompts (`❯ 1.`, `(y/n)`, etc.) and injects
+  Enter with a 1.5s cooldown. Documented as fragile — the permission mode is the robust part.
+
+### Next: M5 (metrics panel: tokens session/week + context %), M6 (Git Bash fallback UX polish,
+docs: CLAUDE.md + STRUCTURE.md schema v5 / new files / actions / settings).
 
 ---
 

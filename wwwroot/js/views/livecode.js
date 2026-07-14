@@ -12,6 +12,7 @@ window.Views.livecode = (function () {
     tickets: [],
     jiraConfigured: false,
     apiKeyPresent: false,
+    bypass: false,
     running: false
   };
 
@@ -87,6 +88,8 @@ window.Views.livecode = (function () {
         <button class="btn" id="lc-stop" disabled>■ Stop</button>
         <span style="flex:1"></span>
         <label class="lc-check"><input type="checkbox" id="lc-auto" ${state.autoApprove ? 'checked' : ''}> Auto-approve confirmations</label>
+        <label class="lc-check" title="Runs every action with no confirmation — use only in a folder you trust">
+          <input type="checkbox" id="lc-bypass"> <span style="color:var(--danger)">Bypass ALL permissions</span></label>
       </div>
 
       <div class="panel lc-terminal-wrap">
@@ -122,6 +125,16 @@ window.Views.livecode = (function () {
     document.getElementById('lc-model').addEventListener('change', e => { state.model = e.target.value; saveConfig(); });
     document.getElementById('lc-agent').addEventListener('change', e => { state.agent = e.target.value; });
     document.getElementById('lc-auto').addEventListener('change', e => { state.autoApprove = e.target.checked; saveConfig(); });
+    document.getElementById('lc-bypass').addEventListener('change', async e => {
+      if (!e.target.checked) { state.bypass = false; return; }
+      const ok = await App.confirm(
+        'Bypass ALL permission checks?\n\n' +
+        'Claude Code will run every action — editing files AND running shell commands — with NO ' +
+        'confirmation. Only use this in a folder you trust.',
+        'Enable bypass', true);
+      state.bypass = ok;
+      e.target.checked = ok; // revert the box if the user cancelled
+    });
 
     document.getElementById('lc-start').addEventListener('click', start);
     document.getElementById('lc-stop').addEventListener('click', stop);
@@ -272,6 +285,7 @@ window.Views.livecode = (function () {
         ticketKey: state.ticket ? state.ticket.key : null,
         ticketSummary: state.ticket ? state.ticket.summary : null,
         autoApprove: state.autoApprove,
+        bypass: state.bypass,
         cols: t.cols, rows: t.rows
       }, 0);
       state.running = true;
