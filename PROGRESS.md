@@ -123,6 +123,14 @@ end of this section) and merging `LIVE-CODE-SESSION` → `main` once happy.
   or tokens. Verified via `--accounttest` (`plan=Team · Max 5x`, `usageResetsAt=2026-07-20`).
 - Added `--accounttest` debug verb.
 
+### Enhancement 2026-07-14 (round 4): context window as "used of max"
+- Investigated whether real per-session/weekly token **limits** are readable — they are **not**
+  (`~/.claude.json`, `policy-limits.json`, `stats-cache.json` hold usage counts + the weekly reset,
+  but no quota numbers or 5-hour session reset; Claude fetches those live as %s from its API).
+- Per the user's choice ("context window only"): the **Context window** metric now shows the one
+  real limit as "`<used> of <max> (N%)`" (e.g. `34K of 1M (3%)`). Session & week stay as plain
+  counts; the weekly reset date stays; the unreadable 5-hour session reset is not shown.
+
 ### M6 done — docs & polish
 - `CLAUDE.md` + `.claude/STRUCTURE.md` updated: Live Code architecture, Porta.Pty dependency,
   ConPTY finding, xterm vendoring, event channel, schema v5, new files/actions/events/settings.

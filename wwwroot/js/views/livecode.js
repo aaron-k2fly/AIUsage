@@ -244,7 +244,8 @@ window.Views.livecode = (function () {
       const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
       set('lc-tok-week', App.fmtNum(m.weekTokens));
       set('lc-tok-session', m.active ? App.fmtNum(m.sessionTokens) : '—');
-      set('lc-ctx', m.active ? `≈ ${m.contextPct}% of ${App.fmtNum(m.contextSize)}` : '—');
+      // Context window is the one real "used of max" limit (200k / 1M).
+      set('lc-ctx', m.active ? `${App.fmtNum(m.contextTokens)} of ${App.fmtNum(m.contextSize)} (${m.contextPct}%)` : '—');
     } catch { /* transient */ }
   }
 
