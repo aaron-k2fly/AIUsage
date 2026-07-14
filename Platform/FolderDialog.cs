@@ -40,4 +40,35 @@ public static class FolderDialog
         done.Wait();
         return result;
     }
+
+    /// <summary>Native "choose file" dialog (same UI-thread marshalling as <see cref="Pick"/>).</summary>
+    public static string? PickFile(PhotinoWindow window, string title, string filterName, string[] extensions, string? initialDir)
+    {
+        string? result = null;
+        using var done = new ManualResetEventSlim(false);
+
+        window.Invoke(() =>
+        {
+            try
+            {
+                var start = !string.IsNullOrWhiteSpace(initialDir) && Directory.Exists(initialDir)
+                    ? initialDir!
+                    : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+                var picked = window.ShowOpenFile(title, start, multiSelect: false,
+                    filters: new[] { (filterName, extensions) });
+                result = picked is { Length: > 0 } ? picked[0] : null;
+            }
+            catch
+            {
+                result = null; // fall back to the manual text field on the page
+            }
+            finally
+            {
+                done.Set();
+            }
+        });
+
+        done.Wait();
+        return result;
+    }
 }

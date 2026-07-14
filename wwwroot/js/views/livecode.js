@@ -17,7 +17,8 @@ window.Views.livecode = (function () {
     plan: '',
     usageResetsAt: '',
     claudeInstalled: true,
-    agentsDir: '',
+    customAgent: '',       // path to a chosen agent .md file
+    customAgentName: '',   // its resolved agent name (shown as confirmation)
     canResume: false
   };
 
@@ -52,7 +53,8 @@ window.Views.livecode = (function () {
     state.plan = cfg.plan || '';
     state.usageResetsAt = cfg.usageResetsAt || '';
     state.claudeInstalled = cfg.claudeInstalled !== false;
-    state.agentsDir = cfg.lastAgentsDir || '';
+    state.customAgent = cfg.lastCustomAgent || '';
+    state.customAgentName = cfg.lastCustomAgentName || '';
 
     // Re-entering the page (the router wiped the DOM): detach the old terminal wiring but DON'T
     // stop the backend session — a running session survives navigation and we reconnect below.
@@ -108,9 +110,10 @@ window.Views.livecode = (function () {
       </div>
 
       <div class="panel lc-row">
-        <label class="lc-label">Agents folder <span class="muted">(optional)</span></label>
-        <input id="lc-agents-dir" class="lc-grow" placeholder="folder with agent .md files (or a project root); also scans the working folder + ~/.claude/agents" value="${App.esc(state.agentsDir)}">
-        <button class="btn" id="lc-agents-browse">Browse…</button>
+        <label class="lc-label">Custom Agent <span class="muted">(optional)</span></label>
+        <input id="lc-custom-agent" class="lc-grow" placeholder="path to an agent .md file — Claude will use this agent on the ticket" value="${App.esc(state.customAgent)}">
+        <button class="btn" id="lc-custom-agent-browse">Browse…</button>
+        <span id="lc-custom-agent-name" class="badge ai" style="${state.customAgentName ? '' : 'display:none'}">✨ ${App.esc(state.customAgentName)}</span>
       </div>
 
       <div class="panel lc-row">
@@ -168,9 +171,13 @@ window.Views.livecode = (function () {
 
     document.getElementById('lc-model').addEventListener('change', e => { state.model = e.target.value; saveConfig(); });
     document.getElementById('lc-agent').addEventListener('change', e => { state.agent = e.target.value; });
-    document.getElementById('lc-agents-dir').addEventListener('input', e => { state.agentsDir = e.target.value.trim(); });
-    document.getElementById('lc-agents-dir').addEventListener('change', () => { saveConfig(); loadAgents(); });
-    document.getElementById('lc-agents-browse').addEventListener('click', browseAgents);
+    document.getElementById('lc-custom-agent').addEventListener('input', e => {
+      state.customAgent = e.target.value.trim();
+      state.customAgentName = ''; // resolved on Browse / start
+      const el = document.getElementById('lc-custom-agent-name'); if (el) el.style.display = 'none';
+    });
+    document.getElementById('lc-custom-agent').addEventListener('change', () => saveConfig());
+    document.getElementById('lc-custom-agent-browse').addEventListener('click', browseCustomAgent);
     document.getElementById('lc-auto').addEventListener('change', e => { state.autoApprove = e.target.checked; saveConfig(); });
     document.getElementById('lc-bypass').addEventListener('change', async e => {
       if (!e.target.checked) { state.bypass = false; return; }
@@ -227,7 +234,7 @@ window.Views.livecode = (function () {
     const sel = document.getElementById('lc-agent');
     if (!sel) return;
     try {
-      const agents = await Bridge.call('livecode.listAgents', { folder: state.folder, agentsDir: state.agentsDir });
+      const agents = await Bridge.call('livecode.listAgents', { folder: state.folder });
       const keep = state.agent;
       sel.innerHTML = `<option value="">(none — default)</option>` +
         agents.map(a => `<option value="${App.esc(a.name)}" title="${App.esc(a.description || '')}">
@@ -255,17 +262,20 @@ window.Views.livecode = (function () {
     }
   }
 
-  async function browseAgents() {
+  async function browseCustomAgent() {
     try {
-      const r = await Bridge.call('livecode.pickFolder', { current: state.agentsDir }, 0);
+      const r = await Bridge.call('livecode.pickAgentFile', { current: state.customAgent }, 0);
       if (r && r.path) {
-        state.agentsDir = r.path;
-        document.getElementById('lc-agents-dir').value = r.path;
+        state.customAgent = r.path;
+        state.customAgentName = r.agentName || '';
+        document.getElementById('lc-custom-agent').value = r.path;
+        const el = document.getElementById('lc-custom-agent-name');
+        if (el) { el.textContent = '✨ ' + (r.agentName || '(unnamed)'); el.style.display = ''; }
         saveConfig();
-        loadAgents();
+        App.toast(r.agentName ? `Custom agent loaded: ${r.agentName}` : 'Agent file selected.');
       }
     } catch (e) {
-      App.toast('Folder picker unavailable — type the path instead.', true);
+      App.toast('File picker unavailable — type the path instead.', true);
     }
   }
 
@@ -286,7 +296,7 @@ window.Views.livecode = (function () {
   function saveConfig() {
     Bridge.call('livecode.saveConfig', {
       folder: state.folder, shell: state.shell, model: state.model,
-      autoApprove: state.autoApprove, agentsDir: state.agentsDir
+      autoApprove: state.autoApprove, customAgent: state.customAgent
     }).catch(() => {});
   }
 
@@ -399,7 +409,7 @@ window.Views.livecode = (function () {
     try {
       const r = await Bridge.call('livecode.start', {
         shell: state.shell, folder: state.folder,
-        model: state.model, agent: state.agent, agentsDir: state.agentsDir,
+        model: state.model, agent: state.agent, customAgent: state.customAgent,
         ticketKey: state.ticket ? state.ticket.key : null,
         ticketSummary: state.ticket ? state.ticket.summary : null,
         autoApprove: state.autoApprove,
@@ -410,7 +420,7 @@ window.Views.livecode = (function () {
       state.canResume = true;
       updateButtons();
       if (r && r.fellBack) App.toast('Git Bash not found — using PowerShell instead.', true);
-      if (r && r.agentsCopied > 0) App.toast(`Loaded ${r.agentsCopied} agent(s) from your Agents folder into .claude/agents.`);
+      if (r && r.agentUsed) App.toast(`Using the ${r.agentUsed} agent on ${state.ticket.key}.`);
       if (r && r.kickoff) App.toast(`Starting Claude Code on ${state.ticket.key} (linked to the ticket)…`);
       pollMetrics(); // immediate refresh; the page-level timer keeps it updated
       t.focus();
@@ -463,7 +473,7 @@ window.Views.livecode = (function () {
     try {
       const r = await Bridge.call('livecode.reset', {
         shell: state.shell, folder: state.folder, model: state.model, agent: state.agent,
-        agentsDir: state.agentsDir,
+        customAgent: state.customAgent,
         ticketKey: state.ticket ? state.ticket.key : null,
         ticketSummary: state.ticket ? state.ticket.summary : null,
         autoApprove: state.autoApprove, bypass: state.bypass,

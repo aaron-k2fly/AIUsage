@@ -188,6 +188,17 @@ end of this section) and merging `LIVE-CODE-SESSION` → `main` once happy.
   `.claude/agents` (never overwriting existing ones). Returns `agentsCopied` (toasted). Then the
   selected agent runs against the ticket via `--agent`.
 
+### Enhancements 2026-07-14 (round 10): Custom Agent file + "use the agent" prompt
+- Replaced the "Agents folder" section with **"Custom Agent"**: Browse now opens a **file picker**
+  (`livecode.pickAgentFile` → `FolderDialog.PickFile`/Photino `ShowOpenFile`) to select an agent `.md`
+  directly; the resolved agent name is shown as a badge next to it (the confirmation that was missing).
+  Persisted as `livecode_custom_agent`; `config` returns `lastCustomAgent` + `lastCustomAgentName`.
+- On start/reset, the chosen agent file is installed into the working folder's `.claude/agents`
+  (`AgentCatalog.InstallAgentFile`, returns its name), and the kickoff prompt is now
+  **"Use the &lt;agent&gt; agent to work on JIRA ticket &lt;KEY&gt;: …"** (prompt-based; the `--agent` flag
+  was removed). Returns `agentUsed` → toasted. The dropdown agent is the fallback when no file is set.
+- Removed `AgentCatalog.SyncCustomAgents` / `livecode_agents_dir` (superseded by the single-file flow).
+
 ### M6 done — docs & polish
 - `CLAUDE.md` + `.claude/STRUCTURE.md` updated: Live Code architecture, Porta.Pty dependency,
   ConPTY finding, xterm vendoring, event channel, schema v5, new files/actions/events/settings.

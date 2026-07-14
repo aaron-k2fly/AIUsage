@@ -50,7 +50,8 @@ public static class LiveCodeHandlers
                 lastShell = SettingsStore.Get("livecode_last_shell") ?? "powershell",
                 lastModel = SettingsStore.Get("livecode_last_model") ?? "",
                 autoApprove = SettingsStore.Get("livecode_auto_approve") == "1",
-                lastAgentsDir = SettingsStore.Get("livecode_agents_dir") ?? "",
+                lastCustomAgent = SettingsStore.Get("livecode_custom_agent") ?? "",
+                lastCustomAgentName = AgentCatalog.ReadAgentName(SettingsStore.Get("livecode_custom_agent")),
                 // Warn on the page if the Claude Code CLI isn't installed.
                 claudeInstalled = ClaudeCli.IsInstalled(),
                 // If a key is set, the child env will have it stripped (subscription auth); the UI
@@ -67,7 +68,7 @@ public static class LiveCodeHandlers
             SetIfPresent(payload, "folder", "livecode_last_folder");
             SetIfPresent(payload, "shell", "livecode_last_shell");
             SetIfPresent(payload, "model", "livecode_last_model");
-            SetIfPresent(payload, "agentsDir", "livecode_agents_dir");
+            SetIfPresent(payload, "customAgent", "livecode_custom_agent");
             if (TryGetBool(payload, "autoApprove", out var auto))
                 SettingsStore.Set("livecode_auto_approve", auto ? "1" : "0");
             return Task.FromResult<object?>(null);
@@ -99,8 +100,7 @@ public static class LiveCodeHandlers
         router.Register("livecode.listAgents", payload =>
         {
             var folder = SessionHandlers.GetString(payload, "folder");
-            var agentsDir = SessionHandlers.GetString(payload, "agentsDir");
-            var agents = AgentCatalog.List(folder, agentsDir)
+            var agents = AgentCatalog.List(folder)
                 .Select(a => new { name = a.Name, description = a.Description, scope = a.Scope });
             return Task.FromResult<object?>(agents);
         });
@@ -110,6 +110,15 @@ public static class LiveCodeHandlers
             var current = SessionHandlers.GetString(payload, "current");
             var path = FolderDialog.Pick(window, "Select working folder", current);
             return Task.FromResult<object?>(new { path });
+        });
+
+        // Pick a single agent .md file directly; also return its resolved agent name (confirmation).
+        router.Register("livecode.pickAgentFile", payload =>
+        {
+            var current = SessionHandlers.GetString(payload, "current");
+            var initialDir = !string.IsNullOrWhiteSpace(current) ? Path.GetDirectoryName(current) : null;
+            var path = FolderDialog.PickFile(window, "Select an agent .md file", "Agent markdown", new[] { "*.md" }, initialDir);
+            return Task.FromResult<object?>(new { path, agentName = AgentCatalog.ReadAgentName(path) });
         });
 
         // --- live terminal ---
@@ -308,7 +317,7 @@ public static class LiveCodeHandlers
         var folder = SessionHandlers.GetString(payload, "folder");
         var model = SessionHandlers.GetString(payload, "model");
         var agent = SessionHandlers.GetString(payload, "agent");
-        var agentsDir = SessionHandlers.GetString(payload, "agentsDir");
+        var customAgent = SessionHandlers.GetString(payload, "customAgent");
         var ticketKey = SessionHandlers.GetString(payload, "ticketKey");
         var ticketSummary = SessionHandlers.GetString(payload, "ticketSummary");
         TryGetBool(payload, "autoApprove", out var autoApprove);
@@ -322,9 +331,12 @@ public static class LiveCodeHandlers
         if (!string.IsNullOrWhiteSpace(folder) && !Directory.Exists(folder))
             throw new ArgumentException($"Folder not found: {folder}");
 
-        // If a custom Agents folder is set, make its agents available to Claude (copy into the
-        // working folder's .claude/agents) BEFORE the kickoff, so `--agent <name>` resolves them.
-        var agentsCopied = AgentCatalog.SyncCustomAgents(agentsDir, folder);
+        // Agent to use: a picked Custom Agent file (installed into .claude/agents so Claude finds it)
+        // takes precedence over the dropdown selection.
+        var agentName = !string.IsNullOrWhiteSpace(customAgent)
+            ? AgentCatalog.InstallAgentFile(customAgent, folder)
+            : null;
+        agentName ??= agent;
 
         var shell = ShellResolver.Resolve(shellReq);
 
@@ -355,7 +367,7 @@ public static class LiveCodeHandlers
         var sessionId = Guid.NewGuid().ToString();
         var kickoff = string.IsNullOrWhiteSpace(ticketKey)
             ? null
-            : BuildClaudeCommand(shell.Kind, ticketKey!, ticketSummary, description, model, agent, permissionMode, sessionId);
+            : BuildClaudeCommand(shell.Kind, ticketKey!, ticketSummary, description, model, agentName, permissionMode, sessionId);
 
         // Record the ticket ↔ session link now (before the transcript exists).
         if (kickoff is not null && !string.IsNullOrWhiteSpace(folder))
@@ -370,7 +382,7 @@ public static class LiveCodeHandlers
 
         LaunchInPty(router, shell, folder, cols, rows, kickoff, permissionMode, sessionId, model,
             trackSession: kickoff is not null); // only track the session id when we launched claude
-        return new { shell = shell.Kind, fellBack = shell.FellBack, kickoff = kickoff is not null, agentsCopied };
+        return new { shell = shell.Kind, fellBack = shell.FellBack, kickoff = kickoff is not null, agentUsed = agentName };
     }
 
     /// <summary>Spawn the shell in a pseudo-console, wire output/exit/kickoff/auto-approve, and record
@@ -433,11 +445,16 @@ public static class LiveCodeHandlers
 
     /// <summary>Build the interactive `claude` invocation typed into the shell to kick off a ticket.</summary>
     private static string BuildClaudeCommand(string shellKind, string key, string? summary,
-        string? description, string? model, string? agent, string? permissionMode, string sessionId)
+        string? description, string? model, string? agentName, string? permissionMode, string sessionId)
     {
-        var prompt = string.IsNullOrWhiteSpace(summary)
-            ? $"Work on JIRA ticket {key}."
-            : $"Work on JIRA ticket {key}: {summary}.";
+        var ticket = string.IsNullOrWhiteSpace(summary)
+            ? $"JIRA ticket {key}"
+            : $"JIRA ticket {key}: {summary}";
+        // When an agent is chosen, tell Claude to USE that agent on the ticket (it invokes the
+        // matching subagent from .claude/agents); otherwise work the ticket directly.
+        var prompt = string.IsNullOrWhiteSpace(agentName)
+            ? $"Work on {ticket}."
+            : $"Use the {agentName} agent to work on {ticket}.";
         if (!string.IsNullOrWhiteSpace(description))
             prompt += " " + description.Trim();
 
@@ -450,7 +467,6 @@ public static class LiveCodeHandlers
         var sb = new StringBuilder("claude");
         sb.Append(" --session-id ").Append(sessionId);
         if (model is "opus" or "sonnet" or "haiku") sb.Append(" --model ").Append(model);
-        if (!string.IsNullOrWhiteSpace(agent)) sb.Append(" --agent ").Append(ShellQuote(shellKind, agent));
         if (permissionMode is not null) sb.Append(" --permission-mode ").Append(permissionMode);
         sb.Append(' ').Append(ShellQuote(shellKind, prompt));
         return sb.ToString();

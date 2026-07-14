@@ -45,39 +45,35 @@ public static class AgentCatalog
         return result.OrderBy(a => a.Name, StringComparer.OrdinalIgnoreCase).ToList();
     }
 
-    /// <summary>
-    /// Make the custom Agents-folder agents usable in the session: copy their <c>*.md</c> into the
-    /// working folder's <c>.claude/agents/</c> (which Claude Code discovers for <c>--agent</c>) before
-    /// the session starts. Existing project agents are NOT overwritten (avoids clobbering the repo's
-    /// own). Returns how many files were copied.
-    /// </summary>
-    public static int SyncCustomAgents(string? customDir, string? workingFolder)
+    /// <summary>The agent name from an agent .md file (frontmatter <c>name</c>, else the file name).</summary>
+    public static string? ReadAgentName(string? mdPath)
     {
-        if (string.IsNullOrWhiteSpace(customDir) || string.IsNullOrWhiteSpace(workingFolder)) return 0;
+        if (string.IsNullOrWhiteSpace(mdPath) || !File.Exists(mdPath)) return null;
+        var (name, _) = ParseFrontmatter(mdPath!);
+        return name ?? Path.GetFileNameWithoutExtension(mdPath!);
+    }
 
-        var dest = Path.Combine(workingFolder!, ".claude", "agents");
-        var sources = new[] { customDir!, Path.Combine(customDir!, ".claude", "agents") };
-        var copied = 0;
-
-        foreach (var src in sources)
+    /// <summary>
+    /// Make a single chosen agent file usable in the session: copy it into the working folder's
+    /// <c>.claude/agents/</c> (so Claude Code discovers it) and return its agent name. Overwrites a
+    /// same-named file (the user explicitly picked this one). Returns null if the file is missing.
+    /// </summary>
+    public static string? InstallAgentFile(string? mdPath, string? workingFolder)
+    {
+        var name = ReadAgentName(mdPath);
+        if (name is null || string.IsNullOrWhiteSpace(workingFolder)) return name;
+        try
         {
-            if (!Directory.Exists(src)) continue;
-            foreach (var file in Directory.EnumerateFiles(src, "*.md", SearchOption.TopDirectoryOnly))
+            var dest = Path.Combine(workingFolder!, ".claude", "agents");
+            var target = Path.Combine(dest, Path.GetFileName(mdPath!));
+            if (!string.Equals(Path.GetFullPath(mdPath!), Path.GetFullPath(target), StringComparison.OrdinalIgnoreCase))
             {
-                var target = Path.Combine(dest, Path.GetFileName(file));
-                try
-                {
-                    if (File.Exists(target)) continue; // never clobber an agent already in the project
-                    if (string.Equals(Path.GetFullPath(file), Path.GetFullPath(target), StringComparison.OrdinalIgnoreCase))
-                        continue; // custom folder already IS the project agents dir
-                    Directory.CreateDirectory(dest);
-                    File.Copy(file, target);
-                    copied++;
-                }
-                catch { /* skip unreadable/locked files */ }
+                Directory.CreateDirectory(dest);
+                File.Copy(mdPath!, target, overwrite: true);
             }
         }
-        return copied;
+        catch { /* best-effort — the prompt will still name the agent */ }
+        return name;
     }
 
     /// <summary>Pull name/description from a leading <c>---</c> frontmatter block. Tolerant of quotes and missing fields.</summary>
