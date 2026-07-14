@@ -63,6 +63,10 @@ internal static class Program
                 Console.WriteLine($"sessions={r.Sessions} newFiles={r.NewFiles} updatedFiles={r.UpdatedFiles} skippedFiles={r.SkippedFiles}");
                 break;
 
+            case "--pty-test":
+                RunPtyTest();
+                break;
+
             case "--sql" when args.Length > 1:
                 using (var conn = Db.Open())
                 using (var cmd = conn.CreateCommand())
@@ -100,8 +104,40 @@ internal static class Program
                 break;
 
             default:
-                Console.WriteLine("Usage: AIUsage [--scan | --sql \"SELECT ...\" | --set <key> <value>]");
+                Console.WriteLine("Usage: AIUsage [--scan | --sql \"SELECT ...\" | --set <key> <value> | --pty-test]");
                 break;
         }
+    }
+
+    /// <summary>Headless smoke test for the ConPTY interop (Terminal/ConPtySession): spawns
+    /// cmd.exe in a pseudo-console, feeds it a command, and verifies the output comes back.</summary>
+    private static void RunPtyTest()
+    {
+        var output = new System.Text.StringBuilder();
+        using var exited = new ManualResetEventSlim(false);
+        var code = -1;
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var stamps = new System.Collections.Concurrent.ConcurrentQueue<string>();
+
+        // Exercises the real ConPtySession wrapper. ping streams ~1 line/sec for ~5s; multiple
+        // timestamped chunks arriving during the run prove continuous streaming (not batched at close).
+        using var session = new Terminal.ConPtySession();
+        session.Output += bytes =>
+        {
+            stamps.Enqueue($"{sw.ElapsedMilliseconds}ms:{bytes.Length}B");
+            output.Append(System.Text.Encoding.UTF8.GetString(bytes));
+        };
+        session.Exited += c => { code = c; exited.Set(); };
+
+        session.Start("ping.exe", new[] { "-n", "6", "127.0.0.1" },
+            Environment.CurrentDirectory, envOverrides: null, cols: 120, rows: 30);
+
+        exited.Wait(TimeSpan.FromSeconds(20));
+        var chunks = stamps.Count;
+        Console.WriteLine();
+        Console.WriteLine($"[pty-test] exitCode={code} chunks={chunks} streamed={chunks > 2} " +
+                          $"timeline=[{string.Join(" ", stamps)}]");
+        Environment.ExitCode = code == 0 && chunks > 2 ? 0 : 1;
     }
 }

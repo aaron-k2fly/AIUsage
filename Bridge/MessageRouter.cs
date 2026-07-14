@@ -57,6 +57,14 @@ public sealed class MessageRouter
         });
     }
 
+    /// <summary>
+    /// Push an unsolicited event to the WebView (no request id) — used for streaming channels
+    /// like live terminal output. The frontend routes `{ type:"event", event, data }` through
+    /// Bridge.on(event, handler). Safe to call from any thread (SendWebMessage marshals).
+    /// </summary>
+    public void PushEvent(string @event, object? data) =>
+        Send(new { type = "event", @event, data });
+
     private void Send(object reply)
     {
         var json = JsonSerializer.Serialize(reply, JsonOpts);

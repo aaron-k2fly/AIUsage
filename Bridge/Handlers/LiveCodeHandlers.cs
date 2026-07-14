@@ -17,6 +17,11 @@ public static class LiveCodeHandlers
     /// <summary>Latest tickets assigned to the current user (independent of the user's Fetch JQL).</summary>
     private const string AssignedJql = "assignee = currentUser() ORDER BY updated DESC";
 
+    // One live terminal at a time (v1). Guarded because output/exit callbacks fire on the
+    // ConPTY read thread while handlers run on bridge pool threads.
+    private static readonly object Gate = new();
+    private static ConPtySession? _session;
+
     public static void Register(MessageRouter router, PhotinoWindow window)
     {
         // Synchronous handlers return Task.FromResult (no Task.Run) — see the note in
@@ -73,7 +78,76 @@ public static class LiveCodeHandlers
             var path = FolderDialog.Pick(window, "Select working folder", current);
             return Task.FromResult<object?>(new { path });
         });
+
+        // --- live terminal (ConPTY) ---
+        // M2 launches a plain shell; the Claude Code launch + ticket kickoff arrive in M3.
+        router.Register("livecode.start", payload =>
+        {
+            var shellReq = SessionHandlers.GetString(payload, "shell") ?? "powershell";
+            var folder = SessionHandlers.GetString(payload, "folder");
+            var cols = (short)GetInt(payload, "cols", 120);
+            var rows = (short)GetInt(payload, "rows", 30);
+
+            if (!string.IsNullOrWhiteSpace(folder) && !Directory.Exists(folder))
+                throw new ArgumentException($"Folder not found: {folder}");
+
+            var shell = ShellResolver.Resolve(shellReq);
+
+            lock (Gate)
+            {
+                StopSession();
+                var session = new ConPtySession();
+                session.Output += bytes =>
+                    router.PushEvent("pty.output", new { data = Convert.ToBase64String(bytes) });
+                session.Exited += code =>
+                {
+                    router.PushEvent("pty.exit", new { code });
+                    lock (Gate) { _session?.Dispose(); _session = null; }
+                };
+                session.Start(shell.Exe, Array.Empty<string>(), folder, envOverrides: null, cols, rows);
+                _session = session;
+            }
+            return Task.FromResult<object?>(new { shell = shell.Kind, fellBack = shell.FellBack });
+        });
+
+        router.Register("pty.input", payload =>
+        {
+            var b64 = SessionHandlers.GetString(payload, "data");
+            if (b64 is not null)
+            {
+                ConPtySession? s;
+                lock (Gate) s = _session;
+                s?.Write(Convert.FromBase64String(b64));
+            }
+            return Task.FromResult<object?>(null);
+        });
+
+        router.Register("pty.resize", payload =>
+        {
+            var cols = (short)GetInt(payload, "cols", 120);
+            var rows = (short)GetInt(payload, "rows", 30);
+            ConPtySession? s;
+            lock (Gate) s = _session;
+            s?.Resize(cols, rows);
+            return Task.FromResult<object?>(null);
+        });
+
+        router.Register("livecode.stop", _ =>
+        {
+            lock (Gate) StopSession();
+            return Task.FromResult<object?>(null);
+        });
     }
+
+    private static void StopSession()
+    {
+        _session?.Dispose();
+        _session = null;
+    }
+
+    private static int GetInt(JsonElement payload, string name, int dflt) =>
+        payload.ValueKind == JsonValueKind.Object && payload.TryGetProperty(name, out var p)
+        && p.ValueKind == JsonValueKind.Number && p.TryGetInt32(out var v) ? v : dflt;
 
     private static void SetIfPresent(JsonElement payload, string jsonName, string settingKey)
     {

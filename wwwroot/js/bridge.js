@@ -2,11 +2,19 @@
 // Usage: Bridge.call('sessions.list', { state: 'pending' }).then(...)
 (function () {
   const pending = new Map();
+  const listeners = new Map(); // event name -> Set of handlers (server-pushed events)
 
   window.external.receiveMessage(function (raw) {
     let msg;
     try { msg = JSON.parse(raw); } catch { return; }
-    if (!msg || !msg.id) return;
+    if (!msg) return;
+    // Unsolicited server->client events (e.g. live terminal output) carry no request id.
+    if (msg.type === 'event') {
+      const hs = listeners.get(msg.event);
+      if (hs) hs.forEach(h => { try { h(msg.data); } catch (e) { console.error(e); } });
+      return;
+    }
+    if (!msg.id) return;
     const waiter = pending.get(msg.id);
     if (!waiter) return;
     pending.delete(msg.id);
@@ -32,6 +40,14 @@
           }, timeoutMs);
         }
       });
+    },
+
+    // Subscribe to a server-pushed event (e.g. 'pty.output'). Returns an unsubscribe fn.
+    on(event, handler) {
+      let hs = listeners.get(event);
+      if (!hs) { hs = new Set(); listeners.set(event, hs); }
+      hs.add(handler);
+      return () => hs.delete(handler);
     }
   };
 })();

@@ -1,6 +1,58 @@
 # PROGRESS — AI Usage Tracker
 
-_Last updated: 2026-07-13_
+_Last updated: 2026-07-14_
+
+## In progress (2026-07-14): Live Code Session feature — branch `LIVE-CODE-SESSION`
+
+New experimental feature: a "Live Code" page (nav item above Settings) that drives an
+interactive Claude Code session under the user's **subscription** auth (no API key),
+kicked off from a selected JIRA ticket. Full design in `PLAN-LIVE-CODE-SESSION.md`.
+
+### Repo now under version control
+- `git init` done; baseline commit of v1 on `main`; feature work on branch `LIVE-CODE-SESSION`.
+- Added `.gitignore` (bin/obj, `aiusage.db*`, `.claude/settings.local.json`, OS cruft).
+- Added `.claude/STRUCTURE.md` (detailed file/DB/action/settings reference) alongside `CLAUDE.md`;
+  both carry a note to keep them in sync on structural changes.
+
+### Design decisions (brainstormed 2026-07-14)
+- Interaction: **live interactive terminal** (real `claude` TUI rendered in-page).
+- Confirmations: **manual/auto toggle**; `bypassPermissions` requires an explicit confirm dialog.
+- Agent selector: **model (`--model`) + optional subagent (`--agent`)** from `.claude/agents`.
+- Kickoff: auto-work the selected ticket; if an agent is chosen, run as that workflow agent.
+- Bottom panel: **usage only** (tokens session/week + context %); plan/tier not exposed by the CLI.
+- Shells: **PowerShell + Git Bash**, with runtime Git-Bash detection → PowerShell fallback.
+- Warn + confirm before starting if `ANTHROPIC_API_KEY` is set (it's stripped from the child env).
+
+### M1 done — page scaffold (commit on branch)
+- New `Live Code` nav item + `wwwroot/js/views/livecode.js`: ticket picker (latest 3 assigned),
+  working-folder picker, shell/model/agent selectors, placeholder terminal + metrics areas.
+- Backend `Bridge/Handlers/LiveCodeHandlers.cs`: `livecode.config/saveConfig/tickets/listAgents/pickFolder`.
+- `Terminal/AgentCatalog.cs` (reads `.claude/agents` frontmatter), `Platform/FolderDialog.cs`
+  (UI-thread-marshalled Photino folder dialog + manual-path fallback).
+
+### M2 done (backend proven) — live terminal transport
+- **Key finding:** the hand-rolled raw-ConPTY implementation (plan approach B) ran the child fine
+  (correct exit codes) but **conhost would not stream output continuously** on this Windows build
+  (26200.8655) — it only flushed on resize/close. Verified via a headless `--pty-test` harness
+  (a `ping` run produced a single 16-byte handshake chunk, then nothing until close).
+- **Resolution:** took the plan's pre-authorized fallback to a maintained library —
+  **`Porta.Pty` 1.0.7** (managed-only NuGet, so the single-file publish story is unchanged).
+  `Terminal/ConPtySession.cs` is now a thin wrapper (same public surface: `Start/Write/Resize/
+  Dispose` + `Output`/`Exited`). `--pty-test` now shows continuous streaming (13 chunks at ~1s
+  intervals for a 6-ping run, `streamed=True`).
+- Streaming transport: `MessageRouter.PushEvent` sends unsolicited `{type:"event",…}` messages;
+  `bridge.js` gained `Bridge.on(event, handler)`. Terminal I/O rides this as `pty.output`/`pty.exit`
+  events + `pty.input`/`pty.resize`/`livecode.start`/`livecode.stop` actions.
+- Frontend: vendored **xterm.js 5.3.0** + fit addon (`wwwroot/lib/xterm.*`, UMD, no CDN — same
+  constraint as Chart.js); `livecode.js` mounts xterm, streams output, sends keystrokes, refits on resize.
+- **Debug CLI:** added `--pty-test` (spawns a pseudo-console, verifies continuous output streaming).
+- **Still to verify in the GUI** (needs a human at the machine): xterm rendering fidelity, typing,
+  and resize. Backend streaming is proven headlessly.
+
+### Next: M3 (launch real `claude` with model/agent + ticket kickoff, strip `ANTHROPIC_API_KEY`),
+M4 (confirmations toggle + bypass confirm), M5 (metrics panel), M6 (Git Bash fallback UX, docs).
+
+---
 
 ## Status: v1 complete + all 2026-07-13 features + published single-file exe
 

@@ -10,7 +10,8 @@ window.Views.livecode = (function () {
     agent: '',
     autoApprove: false,
     tickets: [],
-    jiraConfigured: false
+    jiraConfigured: false,
+    running: false
   };
 
   const MODELS = [
@@ -33,6 +34,14 @@ window.Views.livecode = (function () {
     state.model = cfg.lastModel || '';
     state.autoApprove = !!cfg.autoApprove;
     state.jiraConfigured = !!cfg.jiraConfigured;
+
+    // Re-entering the page (navigation re-renders via innerHTML): drop any stale terminal
+    // wiring and stop an orphaned backend session so we start clean. Re-attaching to a
+    // running session's scrollback is out of scope for v1.
+    if (term.inst || state.running) {
+      Bridge.call('livecode.stop', {}, 0).catch(() => {});
+      teardownTerminal();
+    }
 
     render(el);
     loadTickets();
@@ -113,6 +122,7 @@ window.Views.livecode = (function () {
     document.getElementById('lc-auto').addEventListener('change', e => { state.autoApprove = e.target.checked; saveConfig(); });
 
     document.getElementById('lc-start').addEventListener('click', start);
+    document.getElementById('lc-stop').addEventListener('click', stop);
   }
 
   async function loadTickets() {
@@ -183,7 +193,8 @@ window.Views.livecode = (function () {
 
   function updateStartEnabled() {
     const btn = document.getElementById('lc-start');
-    if (btn) btn.disabled = !(state.ticket && state.folder);
+    // A folder is enough to open a terminal; a ticket drives the M3 kickoff prompt.
+    if (btn) btn.disabled = state.running || !state.folder;
   }
 
   function saveConfig() {
@@ -192,11 +203,97 @@ window.Views.livecode = (function () {
     }).catch(() => {});
   }
 
-  function start() {
-    // Terminal wiring arrives in M2; for now validate + persist and let the user know.
-    if (!state.ticket || !state.folder) return;
+  // --- live terminal (xterm.js over the ConPTY bridge) ---
+  const term = { inst: null, fit: null, unsub: [], ro: null };
+
+  const b64ToBytes = b64 => {
+    const bin = atob(b64);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  };
+  const strToB64 = s => {
+    const bytes = new TextEncoder().encode(s);
+    let bin = '';
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    return btoa(bin);
+  };
+
+  async function start() {
+    if (!state.folder || state.running) return;
     saveConfig();
-    App.toast(`Ready to run ${state.ticket.key} in ${state.folder} (${state.shell}) — live terminal lands in the next step.`);
+
+    const host = document.getElementById('lc-terminal');
+    host.classList.remove('empty');
+    host.textContent = '';
+
+    const t = new Terminal({
+      cursorBlink: true,
+      fontFamily: '"Cascadia Mono", "Consolas", monospace',
+      fontSize: 13,
+      theme: { background: '#1e1e1e', foreground: '#d4d4d4' }
+    });
+    const fit = new FitAddon.FitAddon();
+    t.loadAddon(fit);
+    t.open(host);
+    fit.fit();
+    term.inst = t;
+    term.fit = fit;
+
+    // Subscribe BEFORE starting so no initial output is missed.
+    term.unsub.push(Bridge.on('pty.output', d => { if (d && d.data) t.write(b64ToBytes(d.data)); }));
+    term.unsub.push(Bridge.on('pty.exit', d => {
+      t.write(`\r\n\x1b[90m[process exited with code ${d ? d.code : '?'}]\x1b[0m\r\n`);
+      markStopped();
+    }));
+
+    t.onData(data => Bridge.call('pty.input', { data: strToB64(data) }, 0).catch(() => {}));
+
+    term.ro = new ResizeObserver(() => refit());
+    term.ro.observe(host);
+
+    try {
+      const r = await Bridge.call('livecode.start', {
+        shell: state.shell, folder: state.folder, cols: t.cols, rows: t.rows
+      }, 0);
+      state.running = true;
+      updateStartEnabled();
+      document.getElementById('lc-stop').disabled = false;
+      if (r && r.fellBack) App.toast('Git Bash not found — using PowerShell instead.', true);
+      t.focus();
+    } catch (e) {
+      App.toast('Failed to start session: ' + e.message, true);
+      teardownTerminal();
+    }
+  }
+
+  function refit() {
+    if (!term.fit || !term.inst) return;
+    try {
+      term.fit.fit();
+      if (state.running) Bridge.call('pty.resize', { cols: term.inst.cols, rows: term.inst.rows }, 0).catch(() => {});
+    } catch { /* element not laid out */ }
+  }
+
+  async function stop() {
+    try { await Bridge.call('livecode.stop', {}, 0); } catch { /* ignore */ }
+    markStopped();
+  }
+
+  function markStopped() {
+    state.running = false;
+    const stopBtn = document.getElementById('lc-stop');
+    if (stopBtn) stopBtn.disabled = true;
+    updateStartEnabled();
+  }
+
+  function teardownTerminal() {
+    term.unsub.forEach(fn => { try { fn(); } catch {} });
+    term.unsub = [];
+    if (term.ro) { try { term.ro.disconnect(); } catch {} term.ro = null; }
+    if (term.inst) { try { term.inst.dispose(); } catch {} term.inst = null; }
+    term.fit = null;
+    markStopped();
   }
 
   return { render: load };
