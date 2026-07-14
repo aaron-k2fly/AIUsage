@@ -27,6 +27,7 @@ public static class LiveCodeHandlers
     private static ConPtySession? _session;
     private static string? _activeFolder;       // cwd of the running session (to locate its transcript)
     private static string? _activeSessionId;    // claude --session-id we launched (exact transcript file)
+    private static string? _activeModel;        // selected model (drives the context-window size)
 
     public static void Register(MessageRouter router, PhotinoWindow window)
     {
@@ -180,6 +181,7 @@ public static class LiveCodeHandlers
                 _session = session;
                 _activeFolder = folder;
                 _activeSessionId = kickoff is not null ? sessionId : null; // only known when we launched claude
+                _activeModel = model;
             }
             return new { shell = shell.Kind, fellBack = shell.FellBack, kickoff = kickoff is not null };
         });
@@ -225,13 +227,17 @@ public static class LiveCodeHandlers
                     "SELECT COALESCE(SUM(input_tokens + output_tokens), 0) FROM Sessions " +
                     "WHERE strftime('%Y-%W', started_at) = strftime('%Y-%W', 'now')");
 
-            long sessionTokens = 0, contextTokens = 0, contextSize = 200_000;
+            long sessionTokens = 0, contextTokens = 0;
+            // Prefer the selected model for the window size (per the UI); fall back to the actual
+            // model recorded in the transcript (covers the "Default" selection).
+            string? sizeModel;
+            lock (Gate) sizeModel = _activeModel;
             var file = FindActiveTranscript();
             if (file is not null)
             {
-                var (ctx, model) = SessionAggregator.LastContextTokens(file);
+                var (ctx, transcriptModel) = SessionAggregator.LastContextTokens(file);
                 contextTokens = ctx;
-                contextSize = ContextSizeFor(model);
+                if (string.IsNullOrEmpty(sizeModel)) sizeModel = transcriptModel;
                 using var conn = Db.Open();
                 var rows = Rows.Query(conn,
                     "SELECT COALESCE(input_tokens + output_tokens, 0) AS t FROM Sessions WHERE file_path = $f",
@@ -239,6 +245,7 @@ public static class LiveCodeHandlers
                 if (rows.Count > 0) sessionTokens = Convert.ToInt64(rows[0]["t"] ?? 0L);
             }
 
+            var contextSize = ContextSizeFor(sizeModel);
             return Task.FromResult<object?>(new
             {
                 weekTokens,
@@ -269,9 +276,14 @@ public static class LiveCodeHandlers
         return File.Exists(file) ? file : null;
     }
 
-    /// <summary>Model context window: 1M for the [1m] variants, otherwise 200k.</summary>
-    private static long ContextSizeFor(string? model) =>
-        model is not null && model.Contains("1m", StringComparison.OrdinalIgnoreCase) ? 1_000_000 : 200_000;
+    /// <summary>Model context window. Current Claude models are 1M except Haiku (200k). Accepts either
+    /// the dropdown alias (opus/sonnet/haiku) or a full transcript model id (claude-haiku-4-5, …).
+    /// Defaults to 1M when unknown, matching the current Opus/Sonnet default.</summary>
+    private static long ContextSizeFor(string? model)
+    {
+        if (string.IsNullOrEmpty(model)) return 1_000_000;
+        return model.Contains("haiku", StringComparison.OrdinalIgnoreCase) ? 200_000 : 1_000_000;
+    }
 
     private static void StopSession()
     {
@@ -279,6 +291,7 @@ public static class LiveCodeHandlers
         _session = null;
         _activeFolder = null;
         _activeSessionId = null;
+        _activeModel = null;
     }
 
     /// <summary>Build the interactive `claude` invocation typed into the shell to kick off a ticket.</summary>

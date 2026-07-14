@@ -101,6 +101,17 @@ end of this section) and merging `LIVE-CODE-SESSION` → `main` once happy.
   are confirmed named `<uuid>.jsonl`.
 - Added `--shelltest` debug verb.
 
+### Fixes 2026-07-14 (round 2, from GUI test)
+- **Terminal text overlapped the scrollbar**: WebView2's overlay scrollbar has zero layout width, so
+  xterm's FitAddon computed full-width columns and the last chars rendered under it. Fixed with CSS
+  forcing a real 12px `::-webkit-scrollbar` on `.lc-terminal .xterm-viewport` (FitAddon then reserves
+  a column for it).
+- **Context-window % used the wrong max**: `ContextSizeFor` returned 200k unless the model string
+  contained "1m", but current models don't encode that (`claude-opus-4-8` is 1M) — so % was ~2×.
+  Per the claude-api reference, current Claude models are **1M except Haiku (200k)**. Now the size is
+  driven by the **selected model** (opus/sonnet → 1M, haiku → 200k), falling back to the transcript's
+  model for "Default". Matches Claude Code's own `Context: 30k/1M` indicator.
+
 ### M6 done — docs & polish
 - `CLAUDE.md` + `.claude/STRUCTURE.md` updated: Live Code architecture, Porta.Pty dependency,
   ConPTY finding, xterm vendoring, event channel, schema v5, new files/actions/events/settings.
