@@ -199,6 +199,12 @@ end of this section) and merging `LIVE-CODE-SESSION` → `main` once happy.
   was removed). Returns `agentUsed` → toasted. The dropdown agent is the fallback when no file is set.
 - Removed `AgentCatalog.SyncCustomAgents` / `livecode_agents_dir` (superseded by the single-file flow).
 
+### Enhancement 2026-07-14 (round 11): removed the "Share of tickets AI-assisted" chart
+- Removed the dashboard AI-share doughnut and its whole backend chain (didn't show useful info):
+  `stats.share` handler + `ComputeShareAsync`, `JiraClient.ApproximateCountAsync`, the Settings
+  "share JQL" input, `jiraShareJql`/`DefaultShareJql`, and unused usings. The `jira_share_jql`
+  settings row (if present in a DB) is now just an unreferenced orphan.
+
 ### M6 done — docs & polish
 - `CLAUDE.md` + `.claude/STRUCTURE.md` updated: Live Code architecture, Porta.Pty dependency,
   ConPTY finding, xterm vendoring, event channel, schema v5, new files/actions/events/settings.

@@ -19,7 +19,6 @@ public static class SettingsHandlers
             defaultScanPath = SettingsStore.ScanRoots()[0],
             projectKeyAllowlist = SettingsStore.Get("project_key_allowlist") ?? "",
             backfillFrom = SettingsStore.Get("backfill_from") ?? "",
-            jiraShareJql = SettingsStore.Get("jira_share_jql") ?? DefaultShareJql,
             jiraFetchJql = SettingsStore.Get("jira_fetch_jql") ?? JiraHandlers.DefaultFetchJql
         }));
 
@@ -29,7 +28,6 @@ public static class SettingsHandlers
             SetIfPresent(payload, "jiraEmail", "jira_email");
             SetIfPresent(payload, "scanPaths", "scan_paths");
             SetIfPresent(payload, "backfillFrom", "backfill_from");
-            SetIfPresent(payload, "jiraShareJql", "jira_share_jql");
             SetIfPresent(payload, "jiraFetchJql", "jira_fetch_jql");
 
             // token is write-only: only overwrite when a new non-empty value arrives
@@ -48,8 +46,6 @@ public static class SettingsHandlers
             return Task.FromResult<object?>(null);
         });
     }
-
-    public const string DefaultShareJql = "assignee = currentUser() AND resolved >= -90d";
 
     private static void SetIfPresent(System.Text.Json.JsonElement payload, string jsonName, string settingKey)
     {

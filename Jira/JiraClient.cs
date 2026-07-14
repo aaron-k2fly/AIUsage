@@ -212,18 +212,6 @@ public sealed class JiraClient
         return GetString(doc.RootElement, "displayName") ?? "(unknown user)";
     }
 
-    /// <summary>Approximate issue count for a JQL query (denominator of the AI-share chart).</summary>
-    public async Task<long?> ApproximateCountAsync(string jql)
-    {
-        using var response = await SendAsync(HttpMethod.Post, "/rest/api/3/search/approximate-count",
-            JsonSerializer.Serialize(new { jql }));
-        if (!response.IsSuccessStatusCode) return null; // optional feature — degrade quietly
-        using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
-        return doc.RootElement.TryGetProperty("count", out var c) && c.ValueKind == JsonValueKind.Number
-            ? c.GetInt64()
-            : null;
-    }
-
     private async Task<HttpResponseMessage> SendAsync(HttpMethod method, string path, string? jsonBody = null)
     {
         using var request = new HttpRequestMessage(method, _site + path);
