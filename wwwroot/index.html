@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>AI Usage Tracker</title>
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <div id="layout">
+    <nav id="sidebar">
+      <div class="brand">AI&nbsp;Usage</div>
+      <a href="#dashboard" data-route="dashboard">Dashboard</a>
+      <a href="#sessions" data-route="sessions">Sessions</a>
+      <a href="#manual" data-route="manual">Manual entry</a>
+      <a href="#tickets" data-route="tickets">Tickets</a>
+      <a href="#settings" data-route="settings">Settings</a>
+      <div class="sidebar-footer">
+        <button id="scan-now" class="btn btn-secondary">Scan now</button>
+        <div id="scan-status" class="muted"></div>
+      </div>
+    </nav>
+    <main id="content"></main>
+  </div>
+  <div id="toast"></div>
+
+  <script src="lib/chart.umd.js"></script>
+  <script src="js/bridge.js"></script>
+  <script src="js/views/dashboard.js"></script>
+  <script src="js/views/sessions.js"></script>
+  <script src="js/views/manual.js"></script>
+  <script src="js/views/tickets.js"></script>
+  <script src="js/views/settings.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

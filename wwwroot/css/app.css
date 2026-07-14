@@ -1,0 +1,183 @@
+:root {
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --border: #e2e5ea;
+  --text: #1f2430;
+  --muted: #6b7280;
+  --accent: #4f6df5;
+  --accent-soft: #e8ecfe;
+  --danger: #d94848;
+  --ok: #2e9e5b;
+  --warn: #d9822b;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: "Segoe UI", system-ui, sans-serif;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--bg);
+}
+
+#layout { display: flex; height: 100vh; }
+
+#sidebar {
+  width: 190px;
+  flex-shrink: 0;
+  background: #232936;
+  color: #cfd4e0;
+  display: flex;
+  flex-direction: column;
+  padding: 14px 0;
+}
+#sidebar .brand {
+  font-size: 17px;
+  font-weight: 600;
+  color: #fff;
+  padding: 4px 18px 16px;
+}
+#sidebar a {
+  color: #cfd4e0;
+  text-decoration: none;
+  padding: 9px 18px;
+  display: block;
+}
+#sidebar a:hover { background: #2d3546; color: #fff; }
+#sidebar a.active { background: var(--accent); color: #fff; }
+.sidebar-footer { margin-top: auto; padding: 12px 18px; }
+.sidebar-footer .muted { margin-top: 8px; font-size: 12px; color: #8a92a5; }
+
+#content { flex: 1; overflow-y: auto; padding: 22px 26px; }
+
+h1 { font-size: 20px; margin: 0 0 16px; }
+h2 { font-size: 15px; margin: 0 0 10px; }
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.grid { display: grid; gap: 16px; }
+.grid.tiles { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+.grid.charts { grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
+
+.tile { text-align: left; }
+.tile .value { font-size: 26px; font-weight: 650; margin-top: 2px; }
+.tile .label { color: var(--muted); font-size: 12.5px; }
+
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+th { color: var(--muted); font-weight: 600; font-size: 12.5px; white-space: nowrap; }
+tr:hover td { background: #fafbfd; }
+
+/* Status-based row tinting (Tickets). More specific hover rules keep the tint on hover. */
+tr.st-green  td { background: #e8f6ec; }
+tr.st-blue   td { background: #e9f0fc; }
+tr.st-orange td { background: #fdf1e0; }
+tr.st-green:hover  td { background: #ddf0e3; }
+tr.st-blue:hover   td { background: #dde8fa; }
+tr.st-orange:hover td { background: #fbe9d2; }
+
+/* Bounded, scrollable table with a sticky header (for long lists like Tickets). */
+.table-scroll {
+  overflow: auto;
+  max-height: calc(100vh - 210px);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.table-scroll thead th {
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+  z-index: 1;
+  box-shadow: inset 0 -1px 0 var(--border);
+}
+
+.btn {
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.btn:hover { border-color: var(--accent); color: var(--accent); }
+.btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn-primary:hover { background: #3d59da; color: #fff; }
+.btn-secondary { width: 100%; }
+.btn-small { padding: 3px 8px; font-size: 12px; }
+.btn:disabled { opacity: .5; cursor: default; }
+
+input, select, textarea {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 9px;
+  font: inherit;
+  background: #fff;
+  color: var(--text);
+}
+input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+label { display: block; font-size: 12.5px; color: var(--muted); margin: 12px 0 4px; }
+
+.form-narrow { max-width: 480px; }
+
+.badge {
+  display: inline-block;
+  border-radius: 10px;
+  padding: 1px 8px;
+  font-size: 11.5px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  margin-right: 4px;
+  white-space: nowrap;
+}
+.badge.auto { background: #fdf2e3; color: var(--warn); }
+.badge.confirmed, .badge.manual { background: #e4f5ea; color: var(--ok); }
+.badge.dead { background: #fbe7e7; color: var(--danger); }
+.badge.pending { background: #fdf2e3; color: var(--warn); }
+.badge.ai { background: #ece9fb; color: #4a3aa7; font-weight: 600; }
+
+.tabs { display: flex; gap: 6px; margin-bottom: 14px; }
+.tabs .btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+.muted { color: var(--muted); }
+.empty {
+  text-align: center;
+  color: var(--muted);
+  padding: 40px 0;
+}
+
+.tool-mix { display: flex; height: 8px; width: 90px; border-radius: 4px; overflow: hidden; background: #eef0f4; }
+.tool-mix span { height: 100%; }
+.tool-mix .tm-edit { background: var(--accent); }
+.tool-mix .tm-read { background: #9bb0f8; }
+.tool-mix .tm-bash { background: #d9822b; }
+.tool-mix .tm-other { background: #c3c9d6; }
+
+#toast {
+  position: fixed;
+  bottom: 18px;
+  right: 18px;
+  background: #232936;
+  color: #fff;
+  padding: 10px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  opacity: 0;
+  transition: opacity .25s;
+  pointer-events: none;
+  max-width: 420px;
+}
+#toast.show { opacity: 1; }
+#toast.error { background: var(--danger); }
+
+.chart-box { position: relative; height: 260px; }
+.footnote { font-size: 11.5px; color: var(--muted); margin-top: 6px; }

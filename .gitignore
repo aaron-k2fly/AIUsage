@@ -1,0 +1,16 @@
+# Build output
+bin/
+obj/
+
+# Local runtime database (portable DB sits next to the exe / in bin during dev)
+aiusage.db
+aiusage.db-wal
+aiusage.db-shm
+
+# Claude Code local settings (machine-specific)
+.claude/settings.local.json
+
+# OS / editor cruft
+Thumbs.db
+.DS_Store
+*.user
