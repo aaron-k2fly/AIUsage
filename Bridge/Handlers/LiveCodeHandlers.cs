@@ -107,72 +107,7 @@ public static class LiveCodeHandlers
         // Spawns the chosen shell in a pseudo-console, then (if a ticket is selected) types a
         // `claude …` command that works the ticket. ANTHROPIC_API_KEY is stripped from the child
         // env so Claude Code uses the subscription, never metered API billing.
-        router.Register("livecode.start", async payload =>
-        {
-            var shellReq = SessionHandlers.GetString(payload, "shell") ?? "powershell";
-            var folder = SessionHandlers.GetString(payload, "folder");
-            var model = SessionHandlers.GetString(payload, "model");
-            var agent = SessionHandlers.GetString(payload, "agent");
-            var ticketKey = SessionHandlers.GetString(payload, "ticketKey");
-            var ticketSummary = SessionHandlers.GetString(payload, "ticketSummary");
-            TryGetBool(payload, "autoApprove", out var autoApprove);
-            TryGetBool(payload, "bypass", out var bypass);
-            var cols = (short)GetInt(payload, "cols", 120);
-            var rows = (short)GetInt(payload, "rows", 30);
-
-            // bypass (confirmed in the UI) > auto-approve (acceptEdits) > default (manual prompts).
-            var permissionMode = bypass ? "bypassPermissions" : autoApprove ? "acceptEdits" : null;
-
-            if (!string.IsNullOrWhiteSpace(folder) && !Directory.Exists(folder))
-                throw new ArgumentException($"Folder not found: {folder}");
-
-            var shell = ShellResolver.Resolve(shellReq);
-
-            // Best-effort fresh fetch of the ticket description for the kickoff prompt.
-            string? description = null;
-            if (!string.IsNullOrWhiteSpace(ticketKey))
-            {
-                try
-                {
-                    var client = JiraClient.FromSettings();
-                    if (client is not null)
-                    {
-                        var iss = await client.FetchIssueAsync(ticketKey);
-                        if (iss is not null)
-                        {
-                            ticketSummary ??= iss.Summary;
-                            description = iss.Description;
-                            using var c = Db.Open();
-                            TicketRepo.UpsertFetched(c, iss.Key, iss.Summary, iss.Status, iss.IssueType,
-                                iss.Project, iss.Sprint, iss.Priority, iss.Updated, iss.Description);
-                        }
-                    }
-                }
-                catch { /* kickoff proceeds with the summary the UI already has */ }
-            }
-
-            // Pin an explicit session id so metrics read exactly this session's transcript
-            // (the folder's project dir can hold other concurrent Claude Code sessions).
-            var sessionId = Guid.NewGuid().ToString();
-            var kickoff = string.IsNullOrWhiteSpace(ticketKey)
-                ? null
-                : BuildClaudeCommand(shell.Kind, ticketKey!, ticketSummary, description, model, agent, permissionMode, sessionId);
-
-            // Record the ticket ↔ session link now (before the transcript exists) so working a
-            // ticket via Live Code is captured automatically.
-            if (kickoff is not null && !string.IsNullOrWhiteSpace(folder))
-            {
-                try
-                {
-                    using var conn = Db.Open();
-                    SessionRepo.LinkLiveCodeSession(conn, sessionId, TranscriptPath(folder, sessionId), folder, ticketKey!);
-                }
-                catch { /* best-effort; never block the session on a link failure */ }
-            }
-
-            return LaunchInPty(router, shell, folder, cols, rows, kickoff, permissionMode, sessionId, model,
-                trackSession: kickoff is not null); // only track the session id when we launched claude
-        });
+        router.Register("livecode.start", payload => StartTicketSession(router, payload));
 
         // Resume the previous session's Claude conversation via `claude --resume <id>` (works after
         // Stop or after the process exited — the conversation history lives in the transcript).
@@ -243,18 +178,10 @@ public static class LiveCodeHandlers
             return Task.FromResult<object?>(null);
         });
 
-        // Reset: gracefully quit Claude (/exit), then tear down and open a fresh shell.
+        // Reset: gracefully quit the running Claude (/exit), then restart a FRESH Claude session on
+        // the same ticket (new session id). Same payload as start.
         router.Register("livecode.reset", async payload =>
         {
-            var shellReq = SessionHandlers.GetString(payload, "shell") ?? "powershell";
-            var folder = SessionHandlers.GetString(payload, "folder");
-            var model = SessionHandlers.GetString(payload, "model");
-            var cols = (short)GetInt(payload, "cols", 120);
-            var rows = (short)GetInt(payload, "rows", 30);
-
-            if (!string.IsNullOrWhiteSpace(folder) && !Directory.Exists(folder))
-                throw new ArgumentException($"Folder not found: {folder}");
-
             ConPtySession? current;
             lock (Gate) current = _session;
             if (current is not null)
@@ -262,10 +189,7 @@ public static class LiveCodeHandlers
                 try { current.Write(Encoding.UTF8.GetBytes("/exit\r")); } catch { /* quitting anyway */ }
                 await Task.Delay(800); // give claude a moment to exit cleanly before the tree-kill
             }
-
-            // Fresh shell, no kickoff — LaunchInPty stops the old session (tree-kill) then opens anew.
-            return LaunchInPty(router, shell: ShellResolver.Resolve(shellReq), folder, cols, rows,
-                kickoff: null, permissionMode: null, sessionId: Guid.NewGuid().ToString(), model: model, trackSession: false);
+            return await StartTicketSession(router, payload); // StopSession (tree-kill) + fresh ticket session
         });
 
         // Lightweight status for the sidebar indicator (green when a session is running).
@@ -364,6 +288,74 @@ public static class LiveCodeHandlers
         _activeFolder = null;
         _activeSessionId = null;
         _activeModel = null;
+    }
+
+    /// <summary>Start (or restart) a Claude session on the selected ticket: resolve shell, fetch the
+    /// ticket description, build the kickoff, auto-link the ticket, and launch. Shared by
+    /// livecode.start and livecode.reset (reset first /exits the current session).</summary>
+    private static async Task<object?> StartTicketSession(MessageRouter router, JsonElement payload)
+    {
+        var shellReq = SessionHandlers.GetString(payload, "shell") ?? "powershell";
+        var folder = SessionHandlers.GetString(payload, "folder");
+        var model = SessionHandlers.GetString(payload, "model");
+        var agent = SessionHandlers.GetString(payload, "agent");
+        var ticketKey = SessionHandlers.GetString(payload, "ticketKey");
+        var ticketSummary = SessionHandlers.GetString(payload, "ticketSummary");
+        TryGetBool(payload, "autoApprove", out var autoApprove);
+        TryGetBool(payload, "bypass", out var bypass);
+        var cols = (short)GetInt(payload, "cols", 120);
+        var rows = (short)GetInt(payload, "rows", 30);
+
+        // bypass (confirmed in the UI) > auto-approve (acceptEdits) > default (manual prompts).
+        var permissionMode = bypass ? "bypassPermissions" : autoApprove ? "acceptEdits" : null;
+
+        if (!string.IsNullOrWhiteSpace(folder) && !Directory.Exists(folder))
+            throw new ArgumentException($"Folder not found: {folder}");
+
+        var shell = ShellResolver.Resolve(shellReq);
+
+        // Best-effort fresh fetch of the ticket description for the kickoff prompt.
+        string? description = null;
+        if (!string.IsNullOrWhiteSpace(ticketKey))
+        {
+            try
+            {
+                var client = JiraClient.FromSettings();
+                if (client is not null)
+                {
+                    var iss = await client.FetchIssueAsync(ticketKey);
+                    if (iss is not null)
+                    {
+                        ticketSummary ??= iss.Summary;
+                        description = iss.Description;
+                        using var c = Db.Open();
+                        TicketRepo.UpsertFetched(c, iss.Key, iss.Summary, iss.Status, iss.IssueType,
+                            iss.Project, iss.Sprint, iss.Priority, iss.Updated, iss.Description);
+                    }
+                }
+            }
+            catch { /* kickoff proceeds with the summary the UI already has */ }
+        }
+
+        // Pin an explicit session id so metrics read exactly this session's transcript.
+        var sessionId = Guid.NewGuid().ToString();
+        var kickoff = string.IsNullOrWhiteSpace(ticketKey)
+            ? null
+            : BuildClaudeCommand(shell.Kind, ticketKey!, ticketSummary, description, model, agent, permissionMode, sessionId);
+
+        // Record the ticket ↔ session link now (before the transcript exists).
+        if (kickoff is not null && !string.IsNullOrWhiteSpace(folder))
+        {
+            try
+            {
+                using var conn = Db.Open();
+                SessionRepo.LinkLiveCodeSession(conn, sessionId, TranscriptPath(folder, sessionId), folder, ticketKey!);
+            }
+            catch { /* best-effort; never block the session on a link failure */ }
+        }
+
+        return LaunchInPty(router, shell, folder, cols, rows, kickoff, permissionMode, sessionId, model,
+            trackSession: kickoff is not null); // only track the session id when we launched claude
     }
 
     /// <summary>Spawn the shell in a pseudo-console, wire output/exit/kickoff/auto-approve, and record

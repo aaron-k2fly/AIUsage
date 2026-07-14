@@ -167,7 +167,8 @@ end of this section) and merging `LIVE-CODE-SESSION` → `main` once happy.
 - **Resume now sends "continue"**: `claude --resume <id>` takes a positional prompt, so
   `BuildResumeCommand` appends `'continue'` — resumes AND tells Claude to continue in one command.
 - **Reset button** (next to Resume, enabled only while running): `livecode.reset` writes `/exit` to the
-  running Claude, waits ~800ms, then `LaunchInPty` tree-kills and opens a fresh shell (no kickoff).
+  running Claude, waits ~800ms, then **restarts a fresh Claude session on the same ticket** (new
+  session id). start + reset share `StartTicketSession` (ticket fetch + kickoff + auto-link + launch).
 - **Sidebar dot** on the "Live Code" nav item (`#lc-nav-dot`): app.js polls `livecode.running` every 3s
   (global, all pages) → green when a session is running, red otherwise.
 - **Real-time active sessions**: split out a scan-free `livecode.activeSessions`; the panel now polls it

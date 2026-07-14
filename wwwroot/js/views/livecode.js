@@ -117,7 +117,7 @@ window.Views.livecode = (function () {
         <button class="btn btn-primary" id="lc-start" disabled>▶ Start session</button>
         <button class="btn" id="lc-stop" disabled>■ Stop</button>
         <button class="btn" id="lc-resume" disabled title="Resume the previous session's Claude conversation">▷ Resume</button>
-        <button class="btn" id="lc-reset" disabled title="Quit Claude (/exit) and reopen a fresh shell">↺ Reset</button>
+        <button class="btn" id="lc-reset" disabled title="Quit Claude (/exit) and restart a fresh session on the same ticket">↺ Reset</button>
         <span style="flex:1"></span>
         <label class="lc-check"><input type="checkbox" id="lc-auto" ${state.autoApprove ? 'checked' : ''}> Auto-approve confirmations</label>
         <label class="lc-check" title="Runs every action with no confirmation — use only in a folder you trust">
@@ -458,14 +458,21 @@ window.Views.livecode = (function () {
   async function reset() {
     if (!state.running) return;
     saveConfig();
-    const t = mountTerminal(); // fresh terminal for the new shell
+    const t = mountTerminal(); // fresh terminal for the restarted session
     try {
-      await Bridge.call('livecode.reset', {
-        shell: state.shell, folder: state.folder, model: state.model, cols: t.cols, rows: t.rows
+      const r = await Bridge.call('livecode.reset', {
+        shell: state.shell, folder: state.folder, model: state.model, agent: state.agent,
+        ticketKey: state.ticket ? state.ticket.key : null,
+        ticketSummary: state.ticket ? state.ticket.summary : null,
+        autoApprove: state.autoApprove, bypass: state.bypass,
+        cols: t.cols, rows: t.rows
       }, 0);
-      state.running = true; // a fresh shell is now running
+      state.running = true;
+      state.canResume = true;
       updateButtons();
-      App.toast('Session reset — quit Claude and opened a fresh shell.');
+      App.toast(r && r.kickoff && state.ticket
+        ? `Reset — restarted Claude on ${state.ticket.key}.`
+        : 'Reset — restarted the session.');
       pollMetrics();
       t.focus();
     } catch (e) {
