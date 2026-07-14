@@ -1,0 +1,69 @@
+namespace AIUsage.Terminal;
+
+public sealed record AgentInfo(string Name, string? Description, string Scope);
+
+/// <summary>
+/// Lists Claude Code subagent definitions available for a session: those in the selected
+/// project's <c>.claude/agents</c> and the user's <c>~/.claude/agents</c>. Each agent is a
+/// markdown file with YAML-ish frontmatter carrying <c>name</c> and <c>description</c>;
+/// the frontmatter <c>name</c> is what the CLI's <c>--agent</c> flag expects, falling back
+/// to the file name when absent.
+/// </summary>
+public static class AgentCatalog
+{
+    public static List<AgentInfo> List(string? projectDir)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var result = new List<AgentInfo>();
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+
+        var sources = new List<(string Dir, string Scope)>();
+        if (!string.IsNullOrWhiteSpace(projectDir))
+            sources.Add((Path.Combine(projectDir, ".claude", "agents"), "project"));
+        sources.Add((Path.Combine(home, ".claude", "agents"), "user"));
+
+        foreach (var (dir, scope) in sources)
+        {
+            if (!Directory.Exists(dir)) continue;
+            foreach (var file in Directory.EnumerateFiles(dir, "*.md", SearchOption.TopDirectoryOnly))
+            {
+                var (name, desc) = ParseFrontmatter(file);
+                name ??= Path.GetFileNameWithoutExtension(file);
+                if (!seen.Add(name)) continue; // project agent shadows a same-named user agent
+                result.Add(new AgentInfo(name, desc, scope));
+            }
+        }
+
+        return result.OrderBy(a => a.Name, StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    /// <summary>Pull name/description from a leading <c>---</c> frontmatter block. Tolerant of quotes and missing fields.</summary>
+    private static (string? Name, string? Description) ParseFrontmatter(string file)
+    {
+        string? name = null, desc = null;
+        try
+        {
+            using var reader = new StreamReader(file);
+            var first = reader.ReadLine();
+            if (first?.Trim() != "---") return (null, null);
+
+            string? line;
+            while ((line = reader.ReadLine()) is not null)
+            {
+                if (line.Trim() == "---") break;
+                var colon = line.IndexOf(':');
+                if (colon <= 0) continue;
+                var key = line[..colon].Trim();
+                var value = line[(colon + 1)..].Trim().Trim('"', '\'');
+                if (value.Length == 0) continue;
+                if (key.Equals("name", StringComparison.OrdinalIgnoreCase)) name = value;
+                else if (key.Equals("description", StringComparison.OrdinalIgnoreCase)) desc = value;
+            }
+        }
+        catch
+        {
+            // unreadable file — treat as no frontmatter
+        }
+        return (name, desc);
+    }
+}

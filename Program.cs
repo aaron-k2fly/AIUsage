@@ -45,6 +45,7 @@ internal static class Program
         Bridge.Handlers.SettingsHandlers.Register(router);
         Bridge.Handlers.StatsHandlers.Register(router);
         Bridge.Handlers.ExportHandlers.Register(router);
+        Bridge.Handlers.LiveCodeHandlers.Register(router, window);
         window.RegisterWebMessageReceivedHandler(router.OnMessage);
 
         var indexPath = Path.Combine(WebAssets.EnsureExtracted(), "index.html");

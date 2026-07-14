@@ -181,3 +181,39 @@ label { display: block; font-size: 12.5px; color: var(--muted); margin: 12px 0 4
 
 .chart-box { position: relative; height: 260px; }
 .footnote { font-size: 11.5px; color: var(--muted); margin-top: 6px; }
+
+/* --- Live Code page --- */
+.lc-section-head { font-size: 13px; font-weight: 600; margin-bottom: 10px; }
+.lc-ticket-list { display: flex; flex-direction: column; gap: 8px; }
+.lc-ticket {
+  display: flex; align-items: center; gap: 10px; text-align: left; width: 100%;
+  border: 1px solid var(--border); background: #fff; border-radius: 6px;
+  padding: 9px 12px; cursor: pointer;
+}
+.lc-ticket:hover { border-color: var(--accent); }
+.lc-ticket.selected { border-color: var(--accent); background: var(--accent-soft); }
+.lc-ticket-sum { flex: 1; color: var(--text); }
+.lc-ticket-status { white-space: nowrap; font-size: 12px; }
+
+.lc-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.lc-label { display: inline; margin: 0; color: var(--muted); font-size: 12.5px; white-space: nowrap; }
+.lc-grow { flex: 1; width: auto; min-width: 160px; }
+.lc-row input, .lc-row select { width: auto; }
+.lc-check { display: inline-flex; align-items: center; gap: 6px; margin: 0; color: var(--text); font-size: 13px; }
+.lc-check input { width: auto; }
+
+.lc-terminal-wrap { padding: 0; overflow: hidden; }
+.lc-terminal {
+  min-height: 320px; height: 42vh;
+  background: #1e1e1e; color: #d4d4d4;
+  font-family: "Cascadia Mono", "Consolas", monospace; font-size: 13px;
+  padding: 12px; overflow: auto;
+}
+.lc-terminal.empty {
+  display: flex; align-items: center; justify-content: center;
+  color: #8a8a8a; background: #1e1e1e; text-align: center;
+}
+
+.lc-metrics { display: flex; gap: 28px; flex-wrap: wrap; }
+.lc-metric-label { color: var(--muted); font-size: 12.5px; }
+.lc-metric-val { font-size: 20px; font-weight: 650; margin-top: 2px; }
