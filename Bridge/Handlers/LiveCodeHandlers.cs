@@ -243,6 +243,47 @@ public static class LiveCodeHandlers
             return Task.FromResult<object?>(null);
         });
 
+        // Reset: gracefully quit Claude (/exit), then tear down and open a fresh shell.
+        router.Register("livecode.reset", async payload =>
+        {
+            var shellReq = SessionHandlers.GetString(payload, "shell") ?? "powershell";
+            var folder = SessionHandlers.GetString(payload, "folder");
+            var model = SessionHandlers.GetString(payload, "model");
+            var cols = (short)GetInt(payload, "cols", 120);
+            var rows = (short)GetInt(payload, "rows", 30);
+
+            if (!string.IsNullOrWhiteSpace(folder) && !Directory.Exists(folder))
+                throw new ArgumentException($"Folder not found: {folder}");
+
+            ConPtySession? current;
+            lock (Gate) current = _session;
+            if (current is not null)
+            {
+                try { current.Write(Encoding.UTF8.GetBytes("/exit\r")); } catch { /* quitting anyway */ }
+                await Task.Delay(800); // give claude a moment to exit cleanly before the tree-kill
+            }
+
+            // Fresh shell, no kickoff — LaunchInPty stops the old session (tree-kill) then opens anew.
+            return LaunchInPty(router, shell: ShellResolver.Resolve(shellReq), folder, cols, rows,
+                kickoff: null, permissionMode: null, sessionId: Guid.NewGuid().ToString(), model: model, trackSession: false);
+        });
+
+        // Lightweight status for the sidebar indicator (green when a session is running).
+        router.Register("livecode.running", _ =>
+        {
+            bool running;
+            lock (Gate) running = _session is not null;
+            return Task.FromResult<object?>(new { running });
+        });
+
+        // Cheap, scan-free active-sessions list so the panel can refresh in near-real-time.
+        router.Register("livecode.activeSessions", _ =>
+        {
+            var list = ActiveSessions.Top(2, TimeSpan.FromMinutes(5))
+                .Select(a => new { folder = a.Folder, contextTokens = a.ContextTokens, contextSize = a.ContextSize, contextPct = a.Percent });
+            return Task.FromResult<object?>(new { activeSessions = list });
+        });
+
         // Usage metrics for the bottom panel. Tokens come from the transcript DB (a light
         // incremental scan picks up the live session's new lines); context % is read live from
         // the active session's transcript. Plan/tier is not shown (not exposed by the CLI).
@@ -378,6 +419,8 @@ public static class LiveCodeHandlers
         if (model is "opus" or "sonnet" or "haiku") sb.Append(" --model ").Append(model);
         if (!string.IsNullOrWhiteSpace(agent)) sb.Append(" --agent ").Append(ShellQuote(shellKind, agent));
         if (permissionMode is not null) sb.Append(" --permission-mode ").Append(permissionMode);
+        // Positional prompt: resume AND immediately tell Claude to continue the work.
+        sb.Append(' ').Append(ShellQuote(shellKind, "continue"));
         return sb.ToString();
     }
 

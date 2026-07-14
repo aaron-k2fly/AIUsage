@@ -58,6 +58,7 @@ window.Views.livecode = (function () {
     // stop the backend session — a running session survives navigation and we reconnect below.
     disposeTerminalDom();
     if (term.metricsTimer) { clearInterval(term.metricsTimer); term.metricsTimer = null; }
+    if (term.activeTimer) { clearInterval(term.activeTimer); term.activeTimer = null; }
 
     render(el);
     loadTickets();
@@ -65,7 +66,9 @@ window.Views.livecode = (function () {
     reattach(); // reconnect to a session still running from before we navigated away
 
     pollMetrics();
-    term.metricsTimer = setInterval(pollMetrics, 4000);
+    pollActive();
+    term.metricsTimer = setInterval(pollMetrics, 4000); // tokens/context (does a light DB scan)
+    term.activeTimer = setInterval(pollActive, 2000);   // active sessions (cheap, near-real-time)
     ensureHashCleanup();
   }
 
@@ -114,6 +117,7 @@ window.Views.livecode = (function () {
         <button class="btn btn-primary" id="lc-start" disabled>▶ Start session</button>
         <button class="btn" id="lc-stop" disabled>■ Stop</button>
         <button class="btn" id="lc-resume" disabled title="Resume the previous session's Claude conversation">▷ Resume</button>
+        <button class="btn" id="lc-reset" disabled title="Quit Claude (/exit) and reopen a fresh shell">↺ Reset</button>
         <span style="flex:1"></span>
         <label class="lc-check"><input type="checkbox" id="lc-auto" ${state.autoApprove ? 'checked' : ''}> Auto-approve confirmations</label>
         <label class="lc-check" title="Runs every action with no confirmation — use only in a folder you trust">
@@ -182,6 +186,7 @@ window.Views.livecode = (function () {
     document.getElementById('lc-start').addEventListener('click', start);
     document.getElementById('lc-stop').addEventListener('click', stop);
     document.getElementById('lc-resume').addEventListener('click', resume);
+    document.getElementById('lc-reset').addEventListener('click', reset);
   }
 
   async function loadTickets() {
@@ -268,11 +273,14 @@ window.Views.livecode = (function () {
     const start = document.getElementById('lc-start');
     const stopBtn = document.getElementById('lc-stop');
     const resumeBtn = document.getElementById('lc-resume');
+    const resetBtn = document.getElementById('lc-reset');
     // Start needs a folder + the CLI, and is disabled while a session runs.
     if (start) start.disabled = state.running || !state.folder || !state.claudeInstalled;
     if (stopBtn) stopBtn.disabled = !state.running;
     // Resume continues the previous conversation — only when idle and one exists.
     if (resumeBtn) resumeBtn.disabled = state.running || !state.canResume || !state.claudeInstalled;
+    // Reset (quit + fresh shell) — only while a session is running.
+    if (resetBtn) resetBtn.disabled = !state.running || !state.claudeInstalled;
   }
 
   function saveConfig() {
@@ -287,15 +295,15 @@ window.Views.livecode = (function () {
     if (hashHooked) return;
     hashHooked = true;
     window.addEventListener('hashchange', () => {
-      if ((location.hash || '').slice(1) !== 'livecode' && term.metricsTimer) {
-        clearInterval(term.metricsTimer);
-        term.metricsTimer = null;
+      if ((location.hash || '').slice(1) !== 'livecode') {
+        if (term.metricsTimer) { clearInterval(term.metricsTimer); term.metricsTimer = null; }
+        if (term.activeTimer) { clearInterval(term.activeTimer); term.activeTimer = null; }
       }
     });
   }
 
   // --- live terminal (xterm.js over the ConPTY bridge) ---
-  const term = { inst: null, fit: null, unsub: [], ro: null, metricsTimer: null };
+  const term = { inst: null, fit: null, unsub: [], ro: null, metricsTimer: null, activeTimer: null };
 
   async function pollMetrics() {
     try {
@@ -305,15 +313,20 @@ window.Views.livecode = (function () {
       set('lc-tok-session', m.active ? App.fmtNum(m.sessionTokens) : '—');
       // Context window is the one real "used of max" limit (200k / 1M).
       set('lc-ctx', m.active ? `${App.fmtNum(m.contextTokens)} of ${App.fmtNum(m.contextSize)} (${m.contextPct}%)` : '—');
+    } catch { /* transient */ }
+  }
 
-      const al = document.getElementById('lc-active-list');
-      if (al) {
-        const list = m.activeSessions || [];
-        al.innerHTML = list.length
-          ? list.map(s => `<span class="lc-active-item"><b>${App.esc(s.folder)}</b>
-              <span class="muted">${App.fmtNum(s.contextTokens)} of ${App.fmtNum(s.contextSize)} (${s.contextPct}%)</span></span>`).join('')
-          : '<span class="muted">none active in the last 5 minutes</span>';
-      }
+  // Fast, scan-free refresh of the active-sessions list (near-real-time).
+  async function pollActive() {
+    const al = document.getElementById('lc-active-list');
+    if (!al) return;
+    try {
+      const r = await Bridge.call('livecode.activeSessions', {}, 5000);
+      const list = (r && r.activeSessions) || [];
+      al.innerHTML = list.length
+        ? list.map(s => `<span class="lc-active-item"><b>${App.esc(s.folder)}</b>
+            <span class="muted">${App.fmtNum(s.contextTokens)} of ${App.fmtNum(s.contextSize)} (${s.contextPct}%)</span></span>`).join('')
+        : '<span class="muted">none active in the last 5 minutes</span>';
     } catch { /* transient */ }
   }
 
@@ -333,6 +346,7 @@ window.Views.livecode = (function () {
   // Create the xterm terminal, wire I/O, and (on re-attach) replay buffered output. Reused by
   // start, resume, and reattach.
   function mountTerminal(replayB64) {
+    disposeTerminalDom(); // drop any prior terminal wiring so we never double-subscribe
     const host = document.getElementById('lc-terminal');
     host.classList.remove('empty');
     host.textContent = '';
@@ -437,6 +451,25 @@ window.Views.livecode = (function () {
       t.focus();
     } catch (e) {
       App.toast('Failed to resume: ' + e.message, true);
+      teardownTerminal();
+    }
+  }
+
+  async function reset() {
+    if (!state.running) return;
+    saveConfig();
+    const t = mountTerminal(); // fresh terminal for the new shell
+    try {
+      await Bridge.call('livecode.reset', {
+        shell: state.shell, folder: state.folder, model: state.model, cols: t.cols, rows: t.rows
+      }, 0);
+      state.running = true; // a fresh shell is now running
+      updateButtons();
+      App.toast('Session reset — quit Claude and opened a fresh shell.');
+      pollMetrics();
+      t.focus();
+    } catch (e) {
+      App.toast('Reset failed: ' + e.message, true);
       teardownTerminal();
     }
   }

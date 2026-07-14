@@ -99,8 +99,25 @@
   }
   scanBtn.addEventListener('click', () => runScan(false));
 
+  // --- Live Code session indicator (sidebar dot: green = a session is running) ---
+  async function updateLiveDot() {
+    const dot = document.getElementById('lc-nav-dot');
+    if (!dot) return;
+    try {
+      const r = await Bridge.call('livecode.running', {}, 5000);
+      const on = !!(r && r.running);
+      dot.classList.toggle('on', on);
+      dot.title = on ? 'Active session running' : 'No active session';
+    } catch { /* leave last state */ }
+  }
+
   // --- startup ---
   Bridge.call('ping')
-    .then(() => { navigate(); runScan(true); })
+    .then(() => {
+      navigate();
+      runScan(true);
+      updateLiveDot();
+      setInterval(updateLiveDot, 3000);
+    })
     .catch(e => App.toast('Bridge unavailable: ' + e.message, true));
 })();

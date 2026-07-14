@@ -163,6 +163,16 @@ end of this section) and merging `LIVE-CODE-SESSION` → `main` once happy.
 - **Start disabled while running** (and Stop only enabled while running, Resume only when idle + a prior
   session exists) via a single `updateButtons()`.
 
+### Enhancements 2026-07-14 (round 7): Resume-continue, Reset, sidebar dot, real-time active list
+- **Resume now sends "continue"**: `claude --resume <id>` takes a positional prompt, so
+  `BuildResumeCommand` appends `'continue'` — resumes AND tells Claude to continue in one command.
+- **Reset button** (next to Resume, enabled only while running): `livecode.reset` writes `/exit` to the
+  running Claude, waits ~800ms, then `LaunchInPty` tree-kills and opens a fresh shell (no kickoff).
+- **Sidebar dot** on the "Live Code" nav item (`#lc-nav-dot`): app.js polls `livecode.running` every 3s
+  (global, all pages) → green when a session is running, red otherwise.
+- **Real-time active sessions**: split out a scan-free `livecode.activeSessions`; the panel now polls it
+  every 2s (`pollActive`) while `livecode.metrics` (with the DB scan) stays at 4s for tokens/context.
+
 ### M6 done — docs & polish
 - `CLAUDE.md` + `.claude/STRUCTURE.md` updated: Live Code architecture, Porta.Pty dependency,
   ConPTY finding, xterm vendoring, event channel, schema v5, new files/actions/events/settings.
