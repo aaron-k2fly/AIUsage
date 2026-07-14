@@ -33,21 +33,29 @@ AIUsage/
 │       ├── JiraHandlers.cs
 │       ├── SettingsHandlers.cs
 │       ├── StatsHandlers.cs
-│       └── ExportHandlers.cs
+│       ├── ExportHandlers.cs
+│       └── LiveCodeHandlers.cs   # Live Code page: tickets, folder, agents, terminal, metrics
 ├── Scanner/
 │   ├── TranscriptScanner.cs  # incremental JSONL walk, offset/WAL bookkeeping
-│   ├── SessionAggregator.cs  # SOLE owner of the transcript schema; builds aggregates
+│   ├── SessionAggregator.cs  # SOLE owner of the transcript schema; aggregates + LastContextTokens
 │   └── TicketKeyInferrer.cs  # branch/cwd/prompt → ticket keys, allowlist filter
+├── Terminal/                 # Live Code terminal backend
+│   ├── ConPtySession.cs      # pseudo-console session (Porta.Pty wrapper): Start/Write/Resize + Output/Exited
+│   ├── ShellResolver.cs      # PowerShell / Git Bash resolution (fallback to PowerShell)
+│   ├── AgentCatalog.cs       # lists .claude/agents (project + user) with name/description
+│   └── PromptWatcher.cs      # best-effort auto-approve: detects prompts, injects Enter
+├── Platform/
+│   └── FolderDialog.cs       # UI-thread-marshalled Photino folder picker (+ manual fallback)
 ├── Data/
 │   ├── Db.cs                 # connection open (WAL+FK), portable-first DB path
-│   ├── Migrations.cs         # idempotent schema, seeds, SchemaVersion (v4)
+│   ├── Migrations.cs         # idempotent schema, seeds, SchemaVersion (v5)
 │   ├── Rows.cs               # generic Query→dictionaries / Scalar helpers
 │   └── Repositories/
 │       ├── SessionRepo.cs
 │       ├── TicketRepo.cs
 │       └── ManualEntryRepo.cs
 ├── Jira/
-│   ├── JiraClient.cs         # read-only JIRA Cloud REST client
+│   ├── JiraClient.cs         # read-only JIRA Cloud REST client (+ ADF description parse)
 │   └── JiraSync.cs           # lazy background fetch orchestration
 ├── Settings/
 │   └── SettingsStore.cs      # typed settings + DPAPI-protected secrets
@@ -59,14 +67,18 @@ AIUsage/
     ├── index.html            # shell: sidebar nav + <main id="content"> + script tags
     ├── css/app.css
     ├── lib/chart.umd.js      # vendored Chart.js 4.4.9 (no CDN)
+    ├── lib/xterm.js          # vendored xterm.js 5.3.0 (Live Code terminal; no CDN)
+    ├── lib/xterm.css
+    ├── lib/xterm-addon-fit.js
     └── js/
-        ├── bridge.js         # Bridge.call() promise wrapper over the message bus
-        ├── app.js            # hash router + window.App shared helpers + scan button
+        ├── bridge.js         # Bridge.call() + Bridge.on() event channel
+        ├── app.js            # hash router + window.App helpers (toast/confirm/…) + scan button
         └── views/            # one self-registering module per page (window.Views.*)
             ├── dashboard.js
             ├── sessions.js
             ├── manual.js
             ├── tickets.js
+            ├── livecode.js
             └── settings.js
 ```
 
@@ -76,28 +88,34 @@ AIUsage/
 
 | File | Responsibility |
 |---|---|
-| `Program.cs` | `[STAThread] Main`: `Db.Initialize()`, parse args (`--route` opens the window on a page; anything else → `RunCli`), build the `PhotinoWindow` (1280×860 restore size, maximized, DevTools on), set icon via `WebAssets.ExtractIcon`, register all six handler groups, load `index.html` from the extracted web dir over `file://`. `RunCli` implements `--scan`, `--sql` (read-only, `PRAGMA query_only=ON`), `--set <key> <value>` (routes `jira_token` to `SetProtected`; re-purges auto-links when `project_key_allowlist` changes). |
+| `Program.cs` | `[STAThread] Main`: `Db.Initialize()`, parse args (`--route` opens the window on a page; anything else → `RunCli`), build the `PhotinoWindow` (1280×860 restore size, maximized, DevTools on), set icon via `WebAssets.ExtractIcon`, register all handler groups (incl. `LiveCodeHandlers.Register(router, window)`), load `index.html` from the extracted web dir over `file://`. `RunCli` implements `--scan`, `--sql` (read-only), `--set`, `--pty-test` (ConPTY streaming smoke test), `--envtest` (API-key strip check). |
 | `WebAssets.cs` | `EnsureExtracted()` copies embedded `web/**` resources to `%LOCALAPPDATA%\AIUsage\web` (overwrites each launch) and returns the path; dev fallback to on-disk `wwwroot`. `ExtractIcon()` writes the embedded `appicon.ico` to `%LOCALAPPDATA%\AIUsage`. |
-| `Bridge/MessageRouter.cs` | Owns the handler dictionary and JSON (camelCase) (de)serialization. `OnMessage` parses `{id,action,payload}` on a `Task.Run` pool thread, dispatches, replies `{id,ok,data|error}`. Registers the built-in `ping` (returns `dbPath`). |
+| `Bridge/MessageRouter.cs` | Owns the handler dictionary and JSON (camelCase) (de)serialization. `OnMessage` parses `{id,action,payload}` on a `Task.Run` pool thread, dispatches, replies `{id,ok,data|error}`. `PushEvent(event, data)` sends unsolicited `{type:"event",…}` messages (streaming channel). Registers built-in `ping`. |
 | `Bridge/Handlers/SessionHandlers.cs` | Actions `scan.run`, `sessions.list/assignTicket/confirmLink/removeLink/dismiss/reopen`. Validates ticket keys (`^[A-Z][A-Z0-9]{1,9}-\d{1,6}$`, uppercased). Documents the `Task.Run` null-unwrap → canceled-task trap (see CLAUDE.md). |
 | `Bridge/Handlers/ManualHandlers.cs` | Actions `categories.list`, `manual.list/create/delete`. |
 | `Bridge/Handlers/JiraHandlers.cs` | Actions `tickets.list/fetch/sync/fetchMore`, `jira.test`. Builds a `JiraClient` from stored settings; `fetchMore` uses token-paginated `/search/jql`. |
 | `Bridge/Handlers/SettingsHandlers.cs` | Actions `settings.get` (never returns the token value — write-only), `settings.set` (routes token to `SetProtected`; on allowlist change calls `PurgeDisallowedAutoLinks`). `PurgeDisallowedAutoLinks()` removes auto links whose key is outside the allowlist, keeping manual/confirmed links, and cleans orphan tickets. |
 | `Bridge/Handlers/StatsHandlers.cs` | Actions `stats.dashboard` (tiles + all chart datasets: weekly tickets, activity doughnut, top-tickets, token/model weekly, type×activity) and `stats.share` (AI-share denominator via JIRA `approximate-count`, hidden until JIRA configured). |
 | `Bridge/Handlers/ExportHandlers.cs` | Actions `export.sessions/manual/tickets`. `BuildWorkbook(what)` (public/testable) builds the same dataset as the page; saves directly to Downloads (fallback Documents) and reveals via `explorer /select` — **not** Photino `ShowSaveFile` (returns null off the UI thread). |
+| `Bridge/Handlers/LiveCodeHandlers.cs` | `Register(router, window)`. Actions `livecode.config/saveConfig/tickets/listAgents/pickFolder/start/stop/metrics`, `pty.input/resize`. Holds the single `ConPtySession` (guarded). `start` spawns the shell, strips `ANTHROPIC_API_KEY`, types the `claude …` kickoff (`BuildClaudeCommand` + `ShellQuote`), wires a `PromptWatcher` in auto-approve mode, tracks the active folder for `FindActiveTranscript`. `metrics` returns week/session tokens + live context %. |
 | `Scanner/TranscriptScanner.cs` | `Run()` (lock-guarded) walks each scan root's project dirs for `*.jsonl`, skips files older than `backfill_from`, cheap-prechecks `ScanState` (size+mtime), then inside `BEGIN IMMEDIATE` re-reads state, reads complete lines from the saved offset (`ReadCompleteLines` stops before a partial trailing line), aggregates, upserts sessions + auto links, handles shrink/rewrite via full reparse (`ResetCountersForFile` + `DeleteSessionsNotIn`), saves the new offset, commits. Returns `ScanResult(Sessions, NewFiles, UpdatedFiles, SkippedFiles)`. |
-| `Scanner/SessionAggregator.cs` | `SessionAggregate` (all counters additive) + `Aggregate(lines, filePath)`. **The only code that knows the undocumented Claude Code transcript JSONL schema** — put format-drift fixes here; malformed lines are skipped. Ticket-key source priority: branch(0) → cwd(1) → prompt_text(2). |
+| `Scanner/SessionAggregator.cs` | `SessionAggregate` (all counters additive) + `Aggregate(lines, filePath)`. **The only code that knows the undocumented Claude Code transcript JSONL schema** — put format-drift fixes here; malformed lines are skipped. Ticket-key source priority: branch(0) → cwd(1) → prompt_text(2). Also `LastContextTokens(file)` (schema-aware; latest assistant turn input+cache tokens for the Live Code context %). |
 | `Scanner/TicketKeyInferrer.cs` | Extracts/validates ticket keys against the project-key allowlist; `IsRealBranch` filters out detached-`HEAD`/empty branches. |
 | `Data/Db.cs` | `Initialize(path?)`, `Open()` (WAL + foreign_keys), `DbPath`. `ResolveDefaultPath` is portable-first (next to exe when writable, else `%APPDATA%\AIUsage\`, one-time copy of an existing %APPDATA% DB incl. `-wal`/`-shm`). |
-| `Data/Migrations.cs` | Idempotent `CREATE TABLE IF NOT EXISTS` for all tables + indexes, `AddColumnIfMissing` for post-ship columns, `Seed` (ActivityCategories), `SetVersion` (currently **4**). |
+| `Data/Migrations.cs` | Idempotent `CREATE TABLE IF NOT EXISTS` for all tables + indexes, `AddColumnIfMissing` for post-ship columns (incl. `Tickets.description`), `Seed` (ActivityCategories), `SetVersion` (currently **5**). |
 | `Data/Rows.cs` | `Query(conn, sql, params (name,value)[])` → `List<Dictionary<string,object?>>` (JSON-friendly) and `Scalar(conn, sql)`. |
 | `Data/Repositories/SessionRepo.cs` | `ResetCountersForFile`, `DeleteSessionsNotIn`, `Upsert`, `AddAutoLink`, `AssignTicket`, `ConfirmLink`, `RemoveLink`, `SetReviewState`, `List(conn, filter)`. |
-| `Data/Repositories/TicketRepo.cs` | `UpsertFetched` (all JIRA fields), `MarkFailed`, `UnsyncedKeys`, `AllKeys`, `List` (ordered `updated DESC, key DESC`). |
+| `Data/Repositories/TicketRepo.cs` | `UpsertFetched` (all JIRA fields incl. `description`, COALESCEd so bulk search doesn't wipe it), `MarkFailed`, `UnsyncedKeys`, `AllKeys`, `List` (ordered `updated DESC, key DESC`). |
 | `Data/Repositories/ManualEntryRepo.cs` | `Create` (auto-creates the Ticket row), `Delete`, `List`, `Categories`. |
-| `Jira/JiraClient.cs` | `FetchIssueAsync` (summary/status/type/project/priority/sprint/updated; discovers the Sprint custom-field id once, cached in `jira_sprint_field`), `SearchIssuesAsync` (token-paginated `POST /rest/api/3/search/jql`), `TestConnectionAsync` (`/myself`), `ApproximateCountAsync` (`/search/approximate-count`). 404→dead-key, 401→credential error. |
+| `Jira/JiraClient.cs` | `FetchIssueAsync` (summary/status/type/project/priority/sprint/updated + **description**, flattening the ADF tree to text; discovers the Sprint custom-field id once, cached in `jira_sprint_field`), `SearchIssuesAsync` (token-paginated `POST /rest/api/3/search/jql`; no description), `TestConnectionAsync` (`/myself`), `ApproximateCountAsync`. 404→dead-key, 401→credential error. |
 | `Jira/JiraSync.cs` | `TryFetchInBackground(key)` fire-and-forget enrichment on link/entry creation; `FetchOneAsync(client, key)`. |
 | `Settings/SettingsStore.cs` | Typed accessors over the `Settings` table; `SetProtected`/`GetProtected` (DPAPI `dpapi:` on Windows, `plain:` fallback elsewhere). Helpers: `ScanRoots`, `ProjectKeyAllowlist`, `BackfillFrom`. |
 | `Export/XlsxWriter.cs` | Minimal OOXML `.xlsx` via `System.IO.Compression` (inline strings + numeric cells, XML-escaping, sheet-name sanitising) — no external dependency. |
+| `Terminal/ConPtySession.cs` | Pseudo-console session via **Porta.Pty** (raw ConPTY didn't stream on this build — see PROGRESS.md). `Start(app,args,cwd,envOverrides,cols,rows)`, `Write`, `Resize`, `Dispose`; `Output`/`Exited` events. `BuildEnvironment` applies overrides and ALSO unsets null-valued keys in this process (Porta.Pty inherits parent env). |
+| `Terminal/ShellResolver.cs` | `Resolve("powershell"\|"bash")` → exe + kind + `FellBack`. Git Bash probed on common paths / PATH / from `git.exe`; falls back to PowerShell. |
+| `Terminal/AgentCatalog.cs` | `List(projectDir)` → agents from `<projectDir>/.claude/agents` + `~/.claude/agents`, parsing `name`/`description` frontmatter (project shadows user). |
+| `Terminal/PromptWatcher.cs` | Best-effort auto-approve: ANSI-strips the output stream, detects Claude confirmation prompts (`❯ 1.`, `(y/n)`, …) and returns Enter to inject (1.5s cooldown). Fragile by nature. |
+| `Platform/FolderDialog.cs` | `Pick(window, title, initial)` — Photino `ShowOpenFolder` marshalled onto the UI thread (blocks the caller); returns null on failure (page has a manual path field as fallback). |
 
 ---
 
@@ -110,23 +128,24 @@ AIUsage/
 | File | Responsibility |
 |---|---|
 | `index.html` | Shell: `#sidebar` nav links (`data-route`), `<main id="content">`, `#toast`, "Scan now" button + status, script tags. |
-| `js/bridge.js` | `Bridge.call(action, payload, timeoutMs=120000)` → Promise over `window.external.sendMessage/receiveMessage`; correlates by `crypto.randomUUID()` id; `timeoutMs:0` disables the timeout. |
-| `js/app.js` | Hash router (`navigate()` on `hashchange`, wipes `#content` and calls the view's `render`), `window.App` helpers (`toast`, `esc`, `fmtNum`, `fmtDate`, `refresh`, `exportExcel`), the scan button + startup ping-then-scan. Background (auto) scan only re-renders the dashboard so form state elsewhere survives. |
+| `js/bridge.js` | `Bridge.call(action, payload, timeoutMs=120000)` → Promise over `window.external.sendMessage/receiveMessage`; correlates by `crypto.randomUUID()` id; `timeoutMs:0` disables the timeout. `Bridge.on(event, handler)` subscribes to server-pushed `{type:"event"}` messages (returns an unsubscribe fn). |
+| `js/app.js` | Hash router (`navigate()` on `hashchange`, wipes `#content` and calls the view's `render`), `window.App` helpers (`toast`, `esc`, `fmtNum`, `fmtDate`, `refresh`, `exportExcel`, `confirm` [promise modal]), the scan button + startup ping-then-scan. Background (auto) scan only re-renders the dashboard so form state elsewhere survives. |
 | `js/views/dashboard.js` | Stat tiles + Chart.js charts; fixed `CATEGORY_COLORS` palette (color follows the category, not chart rank); consumes `stats.dashboard`/`stats.share`. |
 | `js/views/sessions.js` | Sessions table with All / Needs review / Not-ticket-related tabs, tool-mix bar, ticket-badge confirm/remove, inline assign, dismiss/reopen; Export button. |
 | `js/views/manual.js` | Manual-entry form (category/tool/date/description) + recent-entries list with delete; Export button. |
 | `js/views/tickets.js` | Tickets table (Key/Summary/Project/Type/Priority dot/Status/Sprint/Sessions/Manual/Last synced), status row tint, All / AI-touched tabs, "✨ AI" badge, "Sync all" + "Fetch more"; Export button. |
+| `js/views/livecode.js` | Live Code page: ticket picker (3 assigned), folder pick, shell/model/agent selectors, Start/Stop + Auto-approve + Bypass (danger confirm), xterm.js terminal (mounts, streams `pty.output`, sends `pty.input`, refits on resize), metrics panel polling `livecode.metrics` every 3s. API-key confirm before start. |
 | `js/views/settings.js` | Settings form: JIRA site URL/email/token (write-only), scan paths, allowlist, backfill date, fetch/share JQL; Test connection. |
 
 ---
 
-## Database schema (SQLite, `SchemaVersion` = 4)
+## Database schema (SQLite, `SchemaVersion` = 5)
 
 | Table | Purpose / key columns |
 |---|---|
 | `Sessions` | One row per Claude Code session (`id` PK). Metadata (file_path, project_dir, git_branch, title[/_is_custom], model, started/ended_at, cc_version), additive token & tool counters, `review_state` (`pending`/`not_ticket_related`/...). |
 | `ScanState` | `file_path` PK → `last_offset`, `last_mtime`, `last_size` for incremental scanning. |
-| `Tickets` | `key` PK; JIRA fields summary/status/issue_type/project/sprint/priority/updated, `last_synced`, `fetch_failed`. |
+| `Tickets` | `key` PK; JIRA fields summary/status/issue_type/project/sprint/priority/updated/**description**, `last_synced`, `fetch_failed`. |
 | `ActivityCategories` | Seeded list: Generated code, Wrote tests, Refactored, Debugged, Reviewed, Wrote docs, Investigated. |
 | `SessionTicketLinks` | (`session_id`→Sessions ON DELETE CASCADE, `ticket_key`) PK; `source` (auto/manual/confirmed), `inferred_from` (branch/cwd/prompt_text), `category_id`. |
 | `ManualEntries` | `id` PK; ticket_key, entry_date, category_id, description, tool_used, created_at. |
@@ -144,7 +163,11 @@ Indexes: `idx_links_ticket`, `idx_manual_ticket`, `idx_sessions_started`.
 `manual.list` · `manual.create` · `manual.delete` · `tickets.list` · `tickets.fetch` ·
 `tickets.sync` · `tickets.fetchMore` · `jira.test` · `settings.get` · `settings.set` ·
 `stats.dashboard` · `stats.share` · `export.sessions` · `export.manual` ·
-`export.tickets` · `ping` (built-in).
+`export.tickets` · `livecode.config` · `livecode.saveConfig` · `livecode.tickets` ·
+`livecode.listAgents` · `livecode.pickFolder` · `livecode.start` · `livecode.stop` ·
+`livecode.metrics` · `pty.input` · `pty.resize` · `ping` (built-in).
+
+**Server-pushed events** (via `MessageRouter.PushEvent` → `Bridge.on`): `pty.output` (base64 terminal bytes), `pty.exit` (exit code).
 
 ---
 
@@ -162,6 +185,17 @@ Indexes: `idx_links_ticket`, `idx_manual_ticket`, `idx_sessions_started`.
 | `jira_fetch_jql` | JQL for "Fetch more" (default `assignee = currentUser() ORDER BY updated DESC`). |
 | `jira_share_jql` | JQL denominator for the AI-share chart. |
 | `jira_sprint_field` | Discovered Sprint custom-field id (cache; `-` = instance has no Sprint field). |
+| `livecode_last_folder` | Live Code: last-used working folder (default). |
+| `livecode_last_shell` | Live Code: last-used shell (`powershell`/`bash`). |
+| `livecode_last_model` | Live Code: last-used model (`''`/`opus`/`sonnet`/`haiku`). |
+| `livecode_auto_approve` | Live Code: auto-approve toggle state (`1`/`0`). (Bypass is never persisted.) |
+
+---
+
+## Dependencies (NuGet)
+
+Photino.NET · Microsoft.Data.Sqlite · System.Security.Cryptography.ProtectedData ·
+SQLitePCLRaw.bundle_e_sqlite3 · **Porta.Pty** (ConPTY wrapper for the Live Code terminal; managed-only).
 
 ---
 

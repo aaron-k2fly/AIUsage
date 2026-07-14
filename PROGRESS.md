@@ -2,11 +2,14 @@
 
 _Last updated: 2026-07-14_
 
-## In progress (2026-07-14): Live Code Session feature — branch `LIVE-CODE-SESSION`
+## 2026-07-14: Live Code Session feature — branch `LIVE-CODE-SESSION` (code-complete, GUI verification pending)
 
 New experimental feature: a "Live Code" page (nav item above Settings) that drives an
 interactive Claude Code session under the user's **subscription** auth (no API key),
 kicked off from a selected JIRA ticket. Full design in `PLAN-LIVE-CODE-SESSION.md`.
+All six milestones (M1–M6) are implemented and build clean; the backend is verified
+headlessly. What remains is **GUI verification** at the machine (see the checklist at the
+end of this section) and merging `LIVE-CODE-SESSION` → `main` once happy.
 
 ### Repo now under version control
 - `git init` done; baseline commit of v1 on `main`; feature work on branch `LIVE-CODE-SESSION`.
@@ -87,8 +90,11 @@ kicked off from a selected JIRA ticket. Full design in `PLAN-LIVE-CODE-SESSION.m
 - Frontend polls `livecode.metrics` every 3s while a session runs; panel shows
   "Tokens this session / this week" and "≈ N% of <size>".
 
-### Next: M6 — docs (CLAUDE.md + STRUCTURE.md: schema v5, new files/actions/settings, Porta.Pty dep),
-final polish. Git Bash fallback UX already implemented (toast on fallback).
+### M6 done — docs & polish
+- `CLAUDE.md` + `.claude/STRUCTURE.md` updated: Live Code architecture, Porta.Pty dependency,
+  ConPTY finding, xterm vendoring, event channel, schema v5, new files/actions/events/settings.
+- Git Bash fallback UX: toast when Git Bash isn't found and PowerShell is used instead.
+- Debug verbs `--pty-test` / `--envtest` documented.
 
 ### GUI verification still outstanding (needs a human + Claude login)
 xterm render/typing/resize (M2), real `claude` launch + subscription billing + kickoff timing
