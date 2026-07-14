@@ -17,6 +17,7 @@ dotnet run -- --set <key> <value>       # headless: write a Settings row (use ji
 dotnet run -- --route <page>            # open the app directly on a page (dashboard|sessions|manual|tickets|livecode|settings) — used for headless UI verification
 dotnet run -- --pty-test                # headless: spawn a pseudo-console and verify continuous output streaming (Live Code terminal)
 dotnet run -- --envtest                 # headless: verify ANTHROPIC_API_KEY is stripped from a session's child env
+dotnet run -- --shelltest               # headless: print resolved PowerShell / Git Bash executables
 
 # Publish the single-file, self-contained exe (see PROGRESS.md for the deliverable path):
 dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -p:DebugType=none -p:DebugSymbols=false
@@ -54,7 +55,8 @@ The bridge also has an **unsolicited event channel** for streaming (used by the 
 - Do NOT use Photino `ShowSaveFile` off the UI thread — it returns null (reports a false "cancelled"). Excel export (`Export/XlsxWriter.cs`, minimal hand-rolled OOXML, no new dependency) saves directly to Downloads and reveals via `explorer /select`.
 - The startup background scan only re-renders the input-free dashboard, never a view the user may be typing into (re-render wipes form state via `innerHTML`).
 - **ConPTY streaming**: use `Porta.Pty`, not raw `CreatePseudoConsole` — the raw path doesn't stream continuously on this machine (see the Live Code paragraph). Stripping a child env var also unsets it in the app process (Porta.Pty inherits parent env); only `ANTHROPIC_API_KEY` is stripped today, which the app never reads.
-- Claude Code encodes a session's cwd into its `~/.claude/projects/<name>` folder by replacing `:`, `\`, `/` with `-` — `FindActiveTranscript` relies on this to locate the live session's transcript.
+- Claude Code encodes a session's cwd into its `~/.claude/projects/<name>` folder by replacing `:`, `\`, `/` with `-`. Live Code launches `claude --session-id <guid>` so `FindActiveTranscript` reads exactly `<guid>.jsonl` — matching by "newest file in the dir" is wrong because other concurrent Claude Code sessions (even this one) write to the same folder.
+- Git Bash is resolved from the Git-for-Windows install paths, **never** a bare `bash.exe` on PATH — on Windows that's `C:\Windows\System32\bash.exe` (the WSL launcher), which fails with `execvpe(/bin/bash)` when there's no distro (`ShellResolver.IsSystemShim`).
 
 ## Companion docs — keep them in sync
 

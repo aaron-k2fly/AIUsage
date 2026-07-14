@@ -90,6 +90,17 @@ end of this section) and merging `LIVE-CODE-SESSION` → `main` once happy.
 - Frontend polls `livecode.metrics` every 3s while a session runs; panel shows
   "Tokens this session / this week" and "≈ N% of <size>".
 
+### Fixes 2026-07-14 (from first GUI test)
+- **Git Bash launched WSL and failed** (`execvpe(/bin/bash) failed`): `ShellResolver.FindGitBash`
+  preferred a bare `bash.exe` on PATH = `C:\Windows\System32\bash.exe` (the WSL launcher). Fixed to
+  prefer Git-for-Windows install paths and never use the System32/SysWOW64 shim (`IsSystemShim`).
+  Verified via `--shelltest` → `C:\Program Files\Git\bin\bash.exe`.
+- **Context window showed the wrong value**: `FindActiveTranscript` picked the newest `.jsonl` in the
+  folder's project dir, which is shared by other concurrent Claude Code sessions (incl. the dev's own).
+  Fixed by launching `claude --session-id <guid>` and reading exactly `<guid>.jsonl`. Transcript files
+  are confirmed named `<uuid>.jsonl`.
+- Added `--shelltest` debug verb.
+
 ### M6 done — docs & polish
 - `CLAUDE.md` + `.claude/STRUCTURE.md` updated: Live Code architecture, Porta.Pty dependency,
   ConPTY finding, xterm vendoring, event channel, schema v5, new files/actions/events/settings.

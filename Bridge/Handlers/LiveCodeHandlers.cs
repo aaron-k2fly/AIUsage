@@ -25,8 +25,8 @@ public static class LiveCodeHandlers
     // ConPTY read thread while handlers run on bridge pool threads.
     private static readonly object Gate = new();
     private static ConPtySession? _session;
-    private static string? _activeFolder;      // cwd of the running session (to locate its transcript)
-    private static DateTime _activeStartedUtc;
+    private static string? _activeFolder;       // cwd of the running session (to locate its transcript)
+    private static string? _activeSessionId;    // claude --session-id we launched (exact transcript file)
 
     public static void Register(MessageRouter router, PhotinoWindow window)
     {
@@ -136,9 +136,12 @@ public static class LiveCodeHandlers
                 catch { /* kickoff proceeds with the summary the UI already has */ }
             }
 
+            // Pin an explicit session id so metrics read exactly this session's transcript
+            // (the folder's project dir can hold other concurrent Claude Code sessions).
+            var sessionId = Guid.NewGuid().ToString();
             var kickoff = string.IsNullOrWhiteSpace(ticketKey)
                 ? null
-                : BuildClaudeCommand(shell.Kind, ticketKey!, ticketSummary, description, model, agent, permissionMode);
+                : BuildClaudeCommand(shell.Kind, ticketKey!, ticketSummary, description, model, agent, permissionMode, sessionId);
 
             // Best-effort auto-answer only when auto-approving (not bypass — bypass never prompts,
             // not default — the user answers manually).
@@ -176,7 +179,7 @@ public static class LiveCodeHandlers
                 session.Start(shell.Exe, Array.Empty<string>(), folder, env, cols, rows);
                 _session = session;
                 _activeFolder = folder;
-                _activeStartedUtc = DateTime.UtcNow;
+                _activeSessionId = kickoff is not null ? sessionId : null; // only known when we launched claude
             }
             return new { shell = shell.Kind, fellBack = shell.FellBack, kickoff = kickoff is not null };
         });
@@ -248,25 +251,22 @@ public static class LiveCodeHandlers
         });
     }
 
-    /// <summary>Newest transcript file in the running session's project dir. Claude Code encodes the
-    /// cwd into the folder name under ~/.claude/projects by replacing ':', '\\' and '/' with '-'.</summary>
+    /// <summary>The launched session's exact transcript file, or null if we didn't launch claude
+    /// (so we don't know the session id). Claude Code stores it at
+    /// ~/.claude/projects/&lt;encoded-cwd&gt;/&lt;session-id&gt;.jsonl, where the cwd is encoded by replacing
+    /// ':', '\\' and '/' with '-'. Using the exact session id avoids matching other concurrent
+    /// Claude Code sessions running in the same folder.</summary>
     private static string? FindActiveTranscript()
     {
-        string? folder;
-        DateTime start;
-        lock (Gate) { folder = _activeFolder; start = _activeStartedUtc; }
-        if (string.IsNullOrWhiteSpace(folder)) return null;
+        string? folder, sessionId;
+        lock (Gate) { folder = _activeFolder; sessionId = _activeSessionId; }
+        if (string.IsNullOrWhiteSpace(folder) || string.IsNullOrWhiteSpace(sessionId)) return null;
 
         var encoded = folder.Replace(':', '-').Replace('\\', '-').Replace('/', '-');
-        var dir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "projects", encoded);
-        if (!Directory.Exists(dir)) return null;
-
-        return new DirectoryInfo(dir).EnumerateFiles("*.jsonl")
-            .Where(f => f.LastWriteTimeUtc >= start.AddSeconds(-120))
-            .OrderByDescending(f => f.LastWriteTimeUtc)
-            .Select(f => f.FullName)
-            .FirstOrDefault();
+        var file = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            ".claude", "projects", encoded, sessionId + ".jsonl");
+        return File.Exists(file) ? file : null;
     }
 
     /// <summary>Model context window: 1M for the [1m] variants, otherwise 200k.</summary>
@@ -278,11 +278,12 @@ public static class LiveCodeHandlers
         _session?.Dispose();
         _session = null;
         _activeFolder = null;
+        _activeSessionId = null;
     }
 
     /// <summary>Build the interactive `claude` invocation typed into the shell to kick off a ticket.</summary>
     private static string BuildClaudeCommand(string shellKind, string key, string? summary,
-        string? description, string? model, string? agent, string? permissionMode)
+        string? description, string? model, string? agent, string? permissionMode, string sessionId)
     {
         var prompt = string.IsNullOrWhiteSpace(summary)
             ? $"Work on JIRA ticket {key}."
@@ -297,6 +298,7 @@ public static class LiveCodeHandlers
         prompt = prompt.Trim();
 
         var sb = new StringBuilder("claude");
+        sb.Append(" --session-id ").Append(sessionId);
         if (model is "opus" or "sonnet" or "haiku") sb.Append(" --model ").Append(model);
         if (!string.IsNullOrWhiteSpace(agent)) sb.Append(" --agent ").Append(ShellQuote(shellKind, agent));
         if (permissionMode is not null) sb.Append(" --permission-mode ").Append(permissionMode);

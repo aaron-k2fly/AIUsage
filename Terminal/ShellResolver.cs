@@ -25,6 +25,9 @@ public static class ShellResolver
 
     private static string? FindGitBash()
     {
+        // Git for Windows install locations come first. We deliberately do NOT prefer a bare
+        // "bash.exe" on PATH: on Windows that resolves to C:\Windows\System32\bash.exe — the WSL
+        // launcher — which fails with "execvpe(/bin/bash) failed" when there's no Linux distro.
         var candidates = new List<string>
         {
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Git", "bin", "bash.exe"),
@@ -40,11 +43,16 @@ public static class ShellResolver
             if (root is not null) candidates.Add(Path.Combine(root, "bin", "bash.exe"));
         }
 
+        // A bash.exe on PATH is a last resort, and only if it isn't the WSL/system shim.
         var onPath = FindOnPath("bash.exe");
-        if (onPath is not null) candidates.Insert(0, onPath);
+        if (onPath is not null && !IsSystemShim(onPath)) candidates.Add(onPath);
 
         return candidates.FirstOrDefault(File.Exists);
     }
+
+    private static bool IsSystemShim(string path) =>
+        path.Contains(@"\System32\", StringComparison.OrdinalIgnoreCase) ||
+        path.Contains(@"\SysWOW64\", StringComparison.OrdinalIgnoreCase);
 
     private static string? FindOnPath(string exe)
     {

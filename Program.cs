@@ -71,6 +71,13 @@ internal static class Program
                 RunEnvTest();
                 break;
 
+            case "--shelltest":
+                var ps = Terminal.ShellResolver.Resolve("powershell");
+                var bash = Terminal.ShellResolver.Resolve("bash");
+                Console.WriteLine($"powershell -> {ps.Exe} (kind={ps.Kind}, fellBack={ps.FellBack})");
+                Console.WriteLine($"bash       -> {bash.Exe} (kind={bash.Kind}, fellBack={bash.FellBack})");
+                break;
+
             case "--sql" when args.Length > 1:
                 using (var conn = Db.Open())
                 using (var cmd = conn.CreateCommand())
