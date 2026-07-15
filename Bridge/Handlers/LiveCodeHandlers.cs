@@ -289,7 +289,7 @@ public static class LiveCodeHandlers
         // Cheap, scan-free active-sessions list so the panel can refresh in near-real-time.
         router.Register("livecode.activeSessions", _ =>
         {
-            var list = ActiveSessions.Top(2, TimeSpan.FromMinutes(5))
+            var list = ActiveSessions.Top(5, TimeSpan.FromMinutes(5))
                 .Select(a => new { folder = a.Folder, contextTokens = a.ContextTokens, contextSize = a.ContextSize, contextPct = a.Percent });
             return Task.FromResult<object?>(new { activeSessions = list });
         });
@@ -329,7 +329,7 @@ public static class LiveCodeHandlers
             }
 
             var contextSize = ContextSizeFor(sizeModel);
-            var activeSessions = ActiveSessions.Top(2, TimeSpan.FromMinutes(5))
+            var activeSessions = ActiveSessions.Top(5, TimeSpan.FromMinutes(5))
                 .Select(a => new { folder = a.Folder, contextTokens = a.ContextTokens, contextSize = a.ContextSize, contextPct = a.Percent });
             return Task.FromResult<object?>(new
             {

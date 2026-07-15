@@ -143,7 +143,7 @@ window.Views.livecode = (function () {
             <div class="lc-metric-sub">${G.cfg.usageResetsAt ? 'usage limits reset ' + App.esc(fmtResetDate(G.cfg.usageResetsAt)) : ''}</div></div>
         </div>
         <div class="lc-active">
-          <div class="lc-metric-label">Active Claude Code sessions <span class="muted">(top 2, last 5 min)</span></div>
+          <div class="lc-metric-label">Active Claude Code sessions <span class="muted">(top 5, last 5 min)</span></div>
           <div id="lc-active-list" class="lc-active-list"><span class="muted">—</span></div>
         </div>
       </div>`;
