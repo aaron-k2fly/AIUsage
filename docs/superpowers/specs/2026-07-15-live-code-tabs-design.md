@@ -90,9 +90,10 @@ Events carry the tab id:
 - `PushEvent("pty.output", { tabId, data })`
 - `PushEvent("pty.exit", { tabId, code })`
 
-On exit, the handler disposes and removes only that tab's `LiveSession` from the
-dictionary (keeping `LastSessionId`/`LastFolder` semantics so Resume still works — i.e.
-mark not-running rather than dropping the resume metadata; see below).
+On exit, the handler disposes only that tab's `ConPtySession` and marks the entry
+not-running (`Session = null`, `ActiveSessionId = null`) but **keeps the `LiveSession` in
+the dictionary**, retaining `LastSessionId`/`LastFolder` so Resume still works (see
+below). The entry is only removed from the dictionary when the tab is closed.
 
 **Stop/exit vs. Resume:** as today, after Stop the tab must still be able to Resume. Keep
 the `LiveSession` entry alive with `Session = null` and `ActiveSessionId = null` but
