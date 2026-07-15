@@ -2,6 +2,34 @@
 
 _Last updated: 2026-07-15_
 
+## 2026-07-15: Live Code — same-folder warning + git-worktree isolation — branch `LIVE-CODE-SESSION`
+
+Safeguard for the new multi-tab sessions: when two tabs would run agents in the **same working
+folder** at once, warn the user and offer to isolate the new session in a git worktree. Design:
+`docs/superpowers/specs/2026-07-15-live-code-same-folder-worktree-design.md`; plan:
+`docs/superpowers/plans/2026-07-15-live-code-same-folder-worktree.md`.
+
+- **`Terminal/GitWorktree.cs`** (new): `IsGitRepo`, `Create` (new branch `livecode/<ticket>-<hex>`
+  in a sibling `<repo>-worktrees/…` off HEAD, returns the launch cwd), `TryRemoveIfClean` (removes
+  worktree + branch only if `git status --porcelain` empty AND no commits beyond base). All git via
+  `Process`; verified the exact sequence against a scratch repo (clean → removed; dirty → kept).
+- **Backend** (`LiveCodeHandlers.cs`): `LiveSession.Worktree`; new `livecode.folderInfo`
+  (`{isGitRepo}`); `StartTicketSession` honors an `isolation` param (`"worktree"` → create worktree,
+  launch/transcript/auto-link use its cwd, store on the entry, return `{isolated, worktreePath,
+  folder}`); `closeTab` runs `TryRemoveIfClean` and returns `{worktreeKept, worktreeReason,
+  worktreePath}`; `StopSession` preserves `Worktree` (so Reset reuses it and close can clean up).
+- **Frontend** (`app.js`, `livecode.js`, `app.css`): `App.choose` (multi-button promise modal); each
+  tab tracks `activeFolder`/`isolated`; on Start, `conflictingTab()` (normalized path compare) detects
+  another running tab in the same folder and `resolveIsolation()` shows the git-repo-aware 3-way
+  warning (worktree / same-folder own-risk / cancel), passing `isolation` to the backend. Reset reuses
+  the tab's worktree (`isolation:'none'`, folder = activeFolder). Isolated tabs show a `⑂` marker;
+  closing toasts kept-vs-removed.
+
+Decisions: warn on Start vs currently-running tabs; 3-way dialog; remove-worktree-if-clean-else-keep;
+omit the worktree option for non-git folders. Build clean (0/0); GitWorktree sequence verified in a
+scratch repo; app boots with no errors. **GUI click-through pending at the machine.** Docs
+(`CLAUDE.md`, `.claude/STRUCTURE.md`) updated in the same change.
+
 ## 2026-07-15: Live Code — multiple sessions as tabs — branch `LIVE-CODE-SESSION`
 
 The Live Code page now runs **multiple independent Claude Code sessions at once**, one per tab.
