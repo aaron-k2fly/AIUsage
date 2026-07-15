@@ -1,6 +1,46 @@
 # PROGRESS — AI Usage Tracker
 
-_Last updated: 2026-07-14_
+_Last updated: 2026-07-15_
+
+## 2026-07-15: Live Code — multiple sessions as tabs — branch `LIVE-CODE-SESSION`
+
+The Live Code page now runs **multiple independent Claude Code sessions at once**, one per tab.
+Design/plan docs: `docs/superpowers/specs/2026-07-15-live-code-tabs-design.md` and
+`docs/superpowers/plans/2026-07-15-live-code-tabs.md`.
+
+**Backend (`Bridge/Handlers/LiveCodeHandlers.cs`)** — replaced the singleton session statics with a
+`Dictionary<string, LiveSession>` keyed by a frontend-minted `tabId` (stable across a tab's
+Stop→Resume/Reset), all guarded by the existing `Gate`. Every per-session action
+(`start`/`resume`/`reset`/`stop`/`attach`/`metrics`, `pty.input`/`pty.resize`) now requires a
+`tabId`, and `pty.output`/`pty.exit` events carry it. New actions: `livecode.list` (all live tabs,
+for rebuild + hover panel) and `livecode.closeTab` (dispose + drop entry); `livecode.running` now
+returns `{running, count}`. `stop` keeps the entry (so Resume works); `closeTab` removes it. The
+exit closure identity-checks the session (`ReferenceEquals`) so a superseded/stopped session can't
+clobber a newer one — and since `ConPtySession.Dispose` sets `_disposed=true` before killing (and
+`Exited` only fires when not disposed), an intentional Stop/Reset/close emits **no** spurious
+`pty.exit`.
+
+**Frontend (`wwwroot/js/views/livecode.js`)** — rewrote from one `state` to a `tabs[]` array +
+`activeTabId` (both in the module closure, so they survive navigation). A tab bar (`＋ New tab`,
+soft cap **6**, `×` closes with a confirm when running) sits above a per-active-tab control panel
+(ticket picker, folder, shell/model/agent, Custom Agent, Start/Stop/Resume/Reset, Auto-approve,
+Bypass, and a per-tab "this session" tokens/context readout). One xterm per tab lives in a
+persistent `#lc-terminals` container (only the active tab shown); a single `pty.output`/`pty.exit`
+subscription routes by `tabId`, so background tabs keep streaming and switching is instant.
+`newTab()` inherits last-used defaults; `reconcile()` merges `tabs[]` with `livecode.list` on load;
+`reattachAll()` replays each running tab's buffer; `focusTab(tabId)` is exported for the sidebar.
+Shared bottom panel keeps Plan + week-tokens + active-sessions.
+
+**Sidebar (`wwwroot/js/app.js`, `index.html`, `app.css`)** — the nav dot reflects
+`livecode.running.count` (green ≥1, red = none; the red default was already in CSS). Hovering the
+Live Code nav item shows a popover (`setupNavPopover`) listing live tabs (ticket/`Session N`,
+folder basename, running/stopped); clicking a row calls `Views.livecode.focusTab`.
+
+**Decisions:** per-session metrics moved into each tab; closing a running tab confirms first; new
+tabs inherit last-used defaults; labels = ticket key or `Session N`. Build clean (0/0); backend
+verified headlessly (`livecode.list`/`running{count}`/`attach{tabId}`/`metrics{tabId}` all correct
+in the boot log). **GUI click-through verification pending at the machine.** Docs (`CLAUDE.md`,
+`.claude/STRUCTURE.md`) updated in the same change.
 
 ## 2026-07-14: Live Code Session feature — branch `LIVE-CODE-SESSION` (code-complete, GUI verification pending)
 
