@@ -230,6 +230,39 @@ label { display: block; font-size: 12.5px; color: var(--muted); margin: 12px 0 4
 .lc-active-list { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 6px; font-size: 13px; }
 .lc-active-item { display: inline-flex; gap: 6px; align-items: baseline; }
 
+/* Tab bar (one session per tab). */
+.lc-tabbar-panel { padding: 8px 10px; }
+.lc-tabbar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.lc-tab {
+  display: inline-flex; align-items: center; gap: 7px;
+  border: 1px solid var(--border); background: #fff; border-radius: 7px;
+  padding: 6px 8px 6px 10px; cursor: pointer; font-size: 13px; user-select: none;
+}
+.lc-tab:hover { border-color: var(--accent); }
+.lc-tab.active { border-color: var(--accent); background: var(--accent-soft); }
+.lc-tab-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--danger); flex-shrink: 0; }
+.lc-tab-dot.running { background: var(--ok); box-shadow: 0 0 5px var(--ok); }
+.lc-tab-label { font-weight: 600; color: var(--text); }
+.lc-tab-shell { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.lc-tab-close {
+  border: none; background: transparent; color: var(--muted); cursor: pointer;
+  font-size: 15px; line-height: 1; padding: 0 2px; border-radius: 4px;
+}
+.lc-tab-close:hover { background: var(--danger); color: #fff; }
+.lc-newtab {
+  border: 1px dashed var(--border); background: transparent; color: var(--muted);
+  border-radius: 7px; padding: 6px 12px; cursor: pointer; font-size: 13px;
+}
+.lc-newtab:hover { border-color: var(--accent); color: var(--accent); }
+
+/* One terminal per tab; only the active one is shown (visibility toggled inline). */
+.lc-terminals .lc-terminal { width: 100%; }
+
+/* Per-tab "this session" tokens/context strip. */
+.lc-tab-metrics { gap: 20px; font-size: 13px; color: var(--text); }
+.lc-tab-metrics .lc-metric-label { font-weight: 600; }
+.lc-tab-metrics b { font-weight: 650; }
+
 .lc-warn {
   border-color: #f0c98a; background: #fdf5e6; color: #8a5a00;
   display: flex; align-items: center; gap: 6px;
