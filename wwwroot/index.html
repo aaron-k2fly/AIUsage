@@ -14,7 +14,10 @@
       <a href="#sessions" data-route="sessions">Sessions</a>
       <a href="#manual" data-route="manual">Manual entry</a>
       <a href="#tickets" data-route="tickets">Tickets</a>
-      <a href="#livecode" data-route="livecode">Live Code <span id="lc-nav-dot" class="nav-dot" title="No active session"></span></a>
+      <div class="nav-item" id="lc-nav-item">
+        <a href="#livecode" data-route="livecode">Live Code <span id="lc-nav-dot" class="nav-dot" title="No active session"></span></a>
+        <div id="lc-nav-popover" class="lc-nav-popover"></div>
+      </div>
       <a href="#settings" data-route="settings">Settings</a>
       <div class="sidebar-footer">
         <button id="scan-now" class="btn btn-secondary">Scan now</button>

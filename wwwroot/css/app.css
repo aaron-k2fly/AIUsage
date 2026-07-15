@@ -278,6 +278,27 @@ label { display: block; font-size: 12.5px; color: var(--muted); margin: 12px 0 4
 }
 .nav-dot.on { background: var(--ok); box-shadow: 0 0 5px var(--ok); }
 
+/* Sidebar hover panel: live sessions across all tabs. Anchored to the Live Code nav item. */
+.nav-item { position: relative; }
+.lc-nav-popover {
+  display: none; position: absolute; left: 100%; top: 0; margin-left: 6px; z-index: 1100;
+  min-width: 240px; max-width: 340px;
+  background: var(--panel); color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px; padding: 8px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.22);
+}
+.lc-nav-popover.show { display: block; }
+.lc-nav-pop-head { font-size: 11.5px; font-weight: 600; color: var(--muted); padding: 2px 6px 6px; }
+.lc-nav-pop-row {
+  display: flex; align-items: center; gap: 8px; padding: 7px 6px; border-radius: 6px; cursor: pointer;
+}
+.lc-nav-pop-row:hover { background: var(--accent-soft); }
+.lc-nav-pop-row .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--danger); flex-shrink: 0; }
+.lc-nav-pop-row .dot.running { background: var(--ok); box-shadow: 0 0 5px var(--ok); }
+.lc-nav-pop-row .lbl { font-weight: 600; }
+.lc-nav-pop-row .fld { color: var(--muted); font-size: 12px; margin-left: auto; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lc-nav-pop-empty { color: var(--muted); font-size: 12.5px; padding: 6px; }
+
 /* --- confirm modal --- */
 .btn-danger { background: var(--danger); border-color: var(--danger); color: #fff; }
 .btn-danger:hover { background: #c23a3a; color: #fff; }

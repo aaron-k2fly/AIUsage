@@ -99,16 +99,57 @@
   }
   scanBtn.addEventListener('click', () => runScan(false));
 
-  // --- Live Code session indicator (sidebar dot: green = a session is running) ---
+  // --- Live Code session indicator (sidebar dot: green = ≥1 session running, red = none) ---
+  let lastSessionList = [];
   async function updateLiveDot() {
     const dot = document.getElementById('lc-nav-dot');
     if (!dot) return;
     try {
       const r = await Bridge.call('livecode.running', {}, 5000);
-      const on = !!(r && r.running);
-      dot.classList.toggle('on', on);
-      dot.title = on ? 'Active session running' : 'No active session';
+      const count = (r && r.count) || 0;
+      dot.classList.toggle('on', count > 0);
+      dot.title = count > 0 ? `${count} active session${count > 1 ? 's' : ''}` : 'No active session';
     } catch { /* leave last state */ }
+  }
+
+  // Hover panel over the Live Code nav item: lists live tabs; click focuses that tab.
+  function setupNavPopover() {
+    const wrap = document.getElementById('lc-nav-item');
+    const pop = document.getElementById('lc-nav-popover');
+    if (!wrap || !pop) return;
+
+    function fldBase(p) {
+      if (!p) return '';
+      const parts = String(p).split(/[\\/]/).filter(Boolean);
+      return parts.length ? parts[parts.length - 1] : p;
+    }
+    function render(list) {
+      lastSessionList = list;
+      if (!list.length) { pop.innerHTML = `<div class="lc-nav-pop-empty">No active sessions</div>`; return; }
+      pop.innerHTML = `<div class="lc-nav-pop-head">Live Code sessions</div>` +
+        list.map((s, i) => `<div class="lc-nav-pop-row" data-tab="${App.esc(s.tabId)}">
+          <span class="dot ${s.running ? 'running' : ''}"></span>
+          <span class="lbl">${App.esc(s.ticketKey || ('Session ' + (i + 1)))}</span>
+          <span class="fld">${App.esc(fldBase(s.folder))}</span>
+        </div>`).join('');
+      pop.querySelectorAll('.lc-nav-pop-row').forEach(row =>
+        row.addEventListener('click', () => {
+          hide();
+          const id = row.dataset.tab;
+          if (window.Views.livecode && window.Views.livecode.focusTab) window.Views.livecode.focusTab(id);
+          else location.hash = '#livecode';
+        }));
+    }
+    function show() { pop.classList.add('show'); }
+    function hide() { pop.classList.remove('show'); }
+
+    wrap.addEventListener('mouseenter', async () => {
+      render(lastSessionList);   // instant from cache
+      show();
+      try { const r = await Bridge.call('livecode.list', {}, 5000); render((r && r.tabs) || []); }
+      catch { /* keep cached */ }
+    });
+    wrap.addEventListener('mouseleave', hide);
   }
 
   // --- startup ---
@@ -116,6 +157,7 @@
     .then(() => {
       navigate();
       runScan(true);
+      setupNavPopover();
       updateLiveDot();
       setInterval(updateLiveDot, 3000);
     })
