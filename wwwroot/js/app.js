@@ -60,6 +60,23 @@
         document.body.appendChild(ov);
       });
     },
+    // Promise<string|null> multi-button chooser (returns the chosen button key, null if dismissed).
+    // buttons: [{ key, label, primary?, danger? }]. Message rendered as text (injection-safe).
+    choose(message, buttons, danger = false) {
+      return new Promise(resolve => {
+        const ov = document.createElement('div');
+        ov.className = 'modal-overlay';
+        const btns = buttons.map(b =>
+          `<button class="btn ${b.primary ? 'btn-primary' : b.danger ? 'btn-danger' : ''}" data-key="${App.esc(b.key)}">${App.esc(b.label)}</button>`
+        ).join('');
+        ov.innerHTML = `<div class="modal"><div class="modal-msg"></div><div class="modal-actions">${btns}</div></div>`;
+        ov.querySelector('.modal-msg').textContent = message;
+        const done = v => { ov.remove(); resolve(v); };
+        ov.querySelectorAll('[data-key]').forEach(b => b.addEventListener('click', () => done(b.dataset.key)));
+        ov.addEventListener('click', e => { if (e.target === ov) done(null); });
+        document.body.appendChild(ov);
+      });
+    },
     // Shared "Export to Excel" — no client timeout since the native save dialog may stay open.
     async exportExcel(action) {
       try {

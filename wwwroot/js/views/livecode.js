@@ -52,6 +52,8 @@ window.Views.livecode = (function () {
       bypass: false,
       running: false,
       canResume: false,
+      activeFolder: '',         // dir the session actually runs in (folder, or worktree cwd)
+      isolated: false,          // running in an isolated git worktree
       term: { inst: null, fit: null, ro: null }   // this tab's xterm handles
     };
   }
@@ -59,6 +61,39 @@ window.Views.livecode = (function () {
   const activeTab = () => tabs.find(t => t.tabId === activeTabId) || null;
   const tabById = id => tabs.find(t => t.tabId === id) || null;
   const tabLabel = (t, i) => t.ticket ? t.ticket.key : (t.ticketKeyHint || ('Session ' + (i + 1)));
+
+  // --- same-folder conflict detection -----------------------------------------
+  const normFolder = p => String(p || '').trim().replace(/[\\/]+/g, '/').replace(/\/+$/, '').toLowerCase();
+
+  // The first OTHER tab whose currently-running session works in the same folder, else null.
+  function conflictingTab(selectedFolder, excludeTabId) {
+    const n = normFolder(selectedFolder);
+    if (!n) return null;
+    return tabs.find(t => t.tabId !== excludeTabId && t.running && normFolder(t.activeFolder) === n) || null;
+  }
+
+  const WT_WARN =
+    '⚠ Another running session is already working in this folder.\n\n' +
+    'Running multiple agents on the same folder at once can cause file conflicts, corrupted ' +
+    'edits, and lost work. Continuing on the same folder is entirely at your own risk.';
+
+  // Resolve how to proceed when starting tab `t`: 'none' | 'worktree', or null to abort.
+  async function resolveIsolation(t) {
+    if (!conflictingTab(t.folder, t.tabId)) return 'none';
+    let isGitRepo = false;
+    try { const r = await Bridge.call('livecode.folderInfo', { folder: t.folder }, 5000); isGitRepo = !!(r && r.isGitRepo); }
+    catch { /* treat as non-git → worktree option omitted */ }
+    let msg = WT_WARN;
+    const buttons = [];
+    if (isGitRepo) buttons.push({ key: 'worktree', label: 'Use isolated worktree (safe)', primary: true });
+    else msg += '\n\n(Isolation with a worktree needs a git repository; this folder is not one.)';
+    buttons.push({ key: 'same', label: 'Continue in same folder (own risk)', danger: true });
+    buttons.push({ key: 'cancel', label: 'Cancel' });
+    const choice = await App.choose(msg, buttons, true);
+    if (choice === 'worktree') return 'worktree';
+    if (choice === 'same') return 'none';
+    return null; // cancel / dismiss
+  }
 
   // --- load / navigation -------------------------------------------------------
   async function load(el) {
@@ -111,7 +146,7 @@ window.Views.livecode = (function () {
     for (const b of backend) {
       let t = tabById(b.tabId);
       if (!t) { t = makeTab(); t.tabId = b.tabId; tabs.push(t); }
-      if (b.folder) t.folder = b.folder;
+      if (b.folder) { t.folder = b.folder; t.activeFolder = b.folder; }
       if (b.model) t.model = b.model;
       if (b.ticketKey) t.ticketKeyHint = b.ticketKey;
       t.running = !!b.running;
@@ -156,6 +191,7 @@ window.Views.livecode = (function () {
       <div class="lc-tab ${t.tabId === activeTabId ? 'active' : ''}" data-tab="${t.tabId}" title="${App.esc(t.folder || '')}">
         <span class="lc-tab-dot ${t.running ? 'running' : ''}"></span>
         <span class="lc-tab-label">${App.esc(tabLabel(t, i))}</span>
+        ${t.isolated ? `<span class="lc-tab-wt" title="Isolated git worktree">⑂</span>` : ''}
         <span class="lc-tab-shell">${t.shell === 'bash' ? 'bash' : 'ps'}</span>
         <button class="lc-tab-close" data-close="${t.tabId}" title="Close tab">×</button>
       </div>`).join('') +
@@ -305,7 +341,10 @@ window.Views.livecode = (function () {
         'Stop and close', true);
       if (!ok) return;
     }
-    try { await Bridge.call('livecode.closeTab', { tabId }, 0); } catch { /* dispose anyway */ }
+    let res;
+    try { res = await Bridge.call('livecode.closeTab', { tabId }, 0); } catch { /* dispose anyway */ }
+    if (res && res.worktreeKept) App.toast(`Worktree kept (${res.worktreeReason}): ${res.worktreePath}`, true);
+    else if (res && res.worktreePath) App.toast('Worktree removed.');
     disposeTabTerm(t);
     const div = terminalDiv(tabId, false);
     if (div) div.remove();
@@ -598,6 +637,7 @@ window.Views.livecode = (function () {
       if (at.running) {
         const term = createTerm(t, at.data);
         t.running = true;
+        if (!t.activeFolder) t.activeFolder = t.folder; // authoritative value comes from reconcile/list
         if (t.tabId === activeTabId) { Bridge.call('pty.resize', { tabId: t.tabId, cols: term.cols, rows: term.rows }, 0).catch(() => {}); }
       } else {
         t.running = false;
@@ -623,6 +663,9 @@ window.Views.livecode = (function () {
         'Run on subscription');
       if (!ok) return;
     }
+    // Warn if another running tab already works in this folder; may switch to worktree isolation.
+    const isolation = await resolveIsolation(t);
+    if (isolation === null) return; // user cancelled
     saveConfig();
     const term = createTerm(t);
     try {
@@ -633,11 +676,15 @@ window.Views.livecode = (function () {
         ticketKey: t.ticket ? t.ticket.key : null,
         ticketSummary: t.ticket ? t.ticket.summary : null,
         autoApprove: t.autoApprove, bypass: t.bypass,
+        isolation,
         cols: term.cols, rows: term.rows
       }, 0);
       t.running = true;
       t.canResume = true;
+      t.activeFolder = (r && r.folder) || t.folder;
+      t.isolated = !!(r && r.isolated);
       updateButtons(); renderTabBar();
+      if (r && r.isolated) App.toast('Running in isolated worktree: ' + r.worktreePath);
       if (r && r.fellBack) App.toast('Git Bash not found — using PowerShell instead.', true);
       if (r && r.agentUsed) App.toast(`Using the ${r.agentUsed} agent on ${t.ticket.key}.`);
       if (r && r.kickoff) App.toast(`Starting Claude Code on ${t.ticket.key} (linked to the ticket)…`);
@@ -685,12 +732,15 @@ window.Views.livecode = (function () {
     saveConfig();
     const term = createTerm(t);
     try {
+      // Reset reuses the tab's current directory (the worktree cwd when isolated) — never a new
+      // worktree (isolation:'none'); the entry keeps its existing WorktreeInfo for close cleanup.
       const r = await Bridge.call('livecode.reset', {
         tabId: t.tabId,
-        shell: t.shell, folder: t.folder, model: t.model, agent: t.agent, customAgent: t.customAgent,
+        shell: t.shell, folder: t.activeFolder || t.folder, model: t.model, agent: t.agent, customAgent: t.customAgent,
         ticketKey: t.ticket ? t.ticket.key : null,
         ticketSummary: t.ticket ? t.ticket.summary : null,
         autoApprove: t.autoApprove, bypass: t.bypass,
+        isolation: 'none',
         cols: term.cols, rows: term.rows
       }, 0);
       t.running = true;

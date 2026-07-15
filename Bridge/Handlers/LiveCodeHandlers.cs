@@ -496,7 +496,8 @@ public static class LiveCodeHandlers
             lock (Gate) { if (Tabs.TryGetValue(tabId, out var e)) e.Worktree = worktree; }
 
         return new { shell = shell.Kind, fellBack = shell.FellBack, kickoff = kickoff is not null,
-                     agentUsed = agentName, isolated = worktree is not null, worktreePath = worktree?.WorktreePath };
+                     agentUsed = agentName, isolated = worktree is not null, worktreePath = worktree?.WorktreePath,
+                     folder = launchFolder };
     }
 
     /// <summary>Spawn the shell in a pseudo-console for the tab, wire output/exit/kickoff/auto-approve,

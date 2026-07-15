@@ -244,6 +244,7 @@ label { display: block; font-size: 12.5px; color: var(--muted); margin: 12px 0 4
 .lc-tab-dot.running { background: var(--ok); box-shadow: 0 0 5px var(--ok); }
 .lc-tab-label { font-weight: 600; color: var(--text); }
 .lc-tab-shell { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.lc-tab-wt { color: var(--accent); font-size: 12px; }
 .lc-tab-close {
   border: none; background: transparent; color: var(--muted); cursor: pointer;
   font-size: 15px; line-height: 1; padding: 0 2px; border-radius: 4px;
