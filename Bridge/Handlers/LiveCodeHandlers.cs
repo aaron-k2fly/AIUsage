@@ -41,6 +41,7 @@ public static class LiveCodeHandlers
         public string? LastSessionId;       // survives Stop, so Resume can `claude --resume <id>`
         public string? LastFolder;
         public string? TicketKey;           // for tab labels + the sidebar hover panel
+        public WorktreeInfo? Worktree;      // set when the session runs in an isolated git worktree
     }
 
     // All live tabs, keyed by tabId. Guarded by Gate for every read/write of a session's fields.
@@ -138,6 +139,14 @@ public static class LiveCodeHandlers
             var initialDir = !string.IsNullOrWhiteSpace(current) ? Path.GetDirectoryName(current) : null;
             var path = FolderDialog.PickFile(window, "Select an agent .md file", "Agent markdown", new[] { "*.md" }, initialDir);
             return Task.FromResult<object?>(new { path, agentName = AgentCatalog.ReadAgentName(path) });
+        });
+
+        // Whether a folder is a git repo — decides if the same-folder conflict dialog can offer
+        // worktree isolation. Best-effort; never throws.
+        router.Register("livecode.folderInfo", payload =>
+        {
+            var folder = SessionHandlers.GetString(payload, "folder");
+            return Task.FromResult<object?>(new { isGitRepo = GitWorktree.IsGitRepo(folder) });
         });
 
         // --- live terminal (per tab) ---
@@ -256,11 +265,21 @@ public static class LiveCodeHandlers
         router.Register("livecode.closeTab", payload =>
         {
             var tabId = RequireTabId(payload);
+            WorktreeInfo? wt;
             lock (Gate)
             {
-                if (Tabs.TryGetValue(tabId, out var e)) { e.Session?.Dispose(); Tabs.Remove(tabId); }
+                if (!Tabs.TryGetValue(tabId, out var e))
+                    return Task.FromResult<object?>(new { worktreeKept = false, worktreeReason = (string?)null, worktreePath = (string?)null });
+                e.Session?.Dispose();
+                wt = e.Worktree;
+                Tabs.Remove(tabId);
             }
-            return Task.FromResult<object?>(null);
+            if (wt is null)
+                return Task.FromResult<object?>(new { worktreeKept = false, worktreeReason = (string?)null, worktreePath = (string?)null });
+
+            // Remove the worktree only if it's clean; otherwise keep it so no agent work is lost.
+            var (removed, reason) = GitWorktree.TryRemoveIfClean(wt);
+            return Task.FromResult<object?>(new { worktreeKept = !removed, worktreeReason = reason, worktreePath = wt.WorktreePath });
         });
 
         // Reset: gracefully quit the running Claude (/exit), then restart a FRESH Claude session on
@@ -379,6 +398,7 @@ public static class LiveCodeHandlers
         e.ActiveFolder = null;
         e.ActiveSessionId = null;
         e.ActiveModel = null;
+        // NOTE: e.Worktree is intentionally preserved here (needed for reset reuse + close cleanup).
     }
 
     /// <summary>Start (or restart) a Claude session on the selected ticket in a tab: resolve shell,
@@ -414,6 +434,20 @@ public static class LiveCodeHandlers
 
         var shell = ShellResolver.Resolve(shellReq);
 
+        // Optional git-worktree isolation (chosen in the same-folder conflict dialog): run this
+        // session in a fresh worktree so concurrent agents can't collide. The launch folder,
+        // transcript path, and auto-link all use the worktree cwd. A git failure propagates out
+        // (the frontend toasts and the session doesn't start).
+        var isolation = SessionHandlers.GetString(payload, "isolation");
+        WorktreeInfo? worktree = null;
+        var launchFolder = folder;
+        if (string.Equals(isolation, "worktree", StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(folder))
+        {
+            worktree = GitWorktree.Create(folder!, ticketKey ?? ("tab-" + tabId[..Math.Min(8, tabId.Length)]));
+            launchFolder = worktree.Cwd;
+        }
+
         // Best-effort fresh fetch of the ticket description for the kickoff prompt.
         string? description = null;
         if (!string.IsNullOrWhiteSpace(ticketKey))
@@ -444,19 +478,25 @@ public static class LiveCodeHandlers
             : BuildClaudeCommand(shell.Kind, ticketKey!, ticketSummary, description, model, agentName, permissionMode, sessionId);
 
         // Record the ticket ↔ session link now (before the transcript exists).
-        if (kickoff is not null && !string.IsNullOrWhiteSpace(folder))
+        if (kickoff is not null && !string.IsNullOrWhiteSpace(launchFolder))
         {
             try
             {
                 using var conn = Db.Open();
-                SessionRepo.LinkLiveCodeSession(conn, sessionId, TranscriptPath(folder, sessionId), folder, ticketKey!);
+                SessionRepo.LinkLiveCodeSession(conn, sessionId, TranscriptPath(launchFolder, sessionId), launchFolder, ticketKey!);
             }
             catch { /* best-effort; never block the session on a link failure */ }
         }
 
-        LaunchInPty(router, tabId, shell, folder, cols, rows, kickoff, permissionMode, sessionId, model, ticketKey,
+        LaunchInPty(router, tabId, shell, launchFolder, cols, rows, kickoff, permissionMode, sessionId, model, ticketKey,
             trackSession: kickoff is not null); // only track the session id when we launched claude
-        return new { shell = shell.Kind, fellBack = shell.FellBack, kickoff = kickoff is not null, agentUsed = agentName };
+
+        // Record the worktree on the tab entry so close can remove-if-clean and reset can reuse it.
+        if (worktree is not null)
+            lock (Gate) { if (Tabs.TryGetValue(tabId, out var e)) e.Worktree = worktree; }
+
+        return new { shell = shell.Kind, fellBack = shell.FellBack, kickoff = kickoff is not null,
+                     agentUsed = agentName, isolated = worktree is not null, worktreePath = worktree?.WorktreePath };
     }
 
     /// <summary>Spawn the shell in a pseudo-console for the tab, wire output/exit/kickoff/auto-approve,
