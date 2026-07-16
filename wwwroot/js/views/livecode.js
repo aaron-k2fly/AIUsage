@@ -54,6 +54,8 @@ window.Views.livecode = (function () {
       canResume: false,
       activeFolder: '',         // dir the session actually runs in (folder, or worktree cwd)
       isolated: false,          // running in an isolated git worktree
+      resumedPick: false,       // running a session picked from Resume Sessions (locks shell/model/agent)
+      folderSessions: [],       // cached list for the Resume Sessions button/modal
       term: { inst: null, fit: null, ro: null }   // this tab's xterm handles
     };
   }
@@ -220,6 +222,7 @@ window.Views.livecode = (function () {
         <label class="lc-label">Working folder</label>
         <input id="lc-folder" class="lc-grow" placeholder="C:\\path\\to\\project" value="${App.esc(t.folder)}">
         <button class="btn" id="lc-browse">Browse…</button>
+        <button class="btn" id="lc-resume-sessions" disabled title="Resume an existing session in this folder">Resume Sessions</button>
       </div>
 
       <div class="panel lc-row">
@@ -268,6 +271,8 @@ window.Views.livecode = (function () {
     renderTicketList();
     loadAgents();
     updateButtons();
+    refreshControlLocks(t);
+    loadFolderSessions(t);
   }
 
   function wireTabPanel() {
@@ -275,8 +280,9 @@ window.Views.livecode = (function () {
     if (!t) return;
 
     document.getElementById('lc-folder').addEventListener('input', e => { t.folder = e.target.value.trim(); updateButtons(); renderTabBar(); });
-    document.getElementById('lc-folder').addEventListener('change', () => { saveConfig(); loadAgents(); });
+    document.getElementById('lc-folder').addEventListener('change', () => { saveConfig(); loadAgents(); loadFolderSessions(t); });
     document.getElementById('lc-browse').addEventListener('click', browse);
+    document.getElementById('lc-resume-sessions').addEventListener('click', () => openResumeSessions(t));
 
     document.querySelectorAll('[data-shell]').forEach(b =>
       b.addEventListener('click', () => {
@@ -286,7 +292,17 @@ window.Views.livecode = (function () {
       }));
 
     document.getElementById('lc-model').addEventListener('change', e => { t.model = e.target.value; saveConfig(); });
-    document.getElementById('lc-agent').addEventListener('change', e => { t.agent = e.target.value; });
+    document.getElementById('lc-agent').addEventListener('change', e => {
+      t.agent = e.target.value;
+      if (t.agent) { // selecting an agent clears + disables the Custom Agent input
+        t.customAgent = '';
+        t.customAgentName = '';
+        const ca = document.getElementById('lc-custom-agent'); if (ca) ca.value = '';
+        const nm = document.getElementById('lc-custom-agent-name'); if (nm) nm.style.display = 'none';
+        saveConfig();
+      }
+      refreshControlLocks(t);
+    });
     document.getElementById('lc-custom-agent').addEventListener('input', e => {
       t.customAgent = e.target.value.trim();
       t.customAgentName = '';
@@ -431,6 +447,83 @@ window.Views.livecode = (function () {
     } catch { /* leave the "(none)" default */ }
   }
 
+  // --- Resume Sessions (pick an existing session in this folder) ---------------
+  async function loadFolderSessions(t) {
+    const btn = document.getElementById('lc-resume-sessions');
+    if (!t.folder) { t.folderSessions = []; if (btn && t === activeTab()) btn.disabled = true; return; }
+    try {
+      const r = await Bridge.call('livecode.sessionsInFolder', { folder: t.folder }, 5000);
+      t.folderSessions = (r && r.sessions) || [];
+    } catch { t.folderSessions = []; }
+    if (btn && t === activeTab()) btn.disabled = !t.folderSessions.length;
+  }
+
+  function fmtSessionTime(iso) {
+    const d = new Date(iso);
+    if (isNaN(d)) return '';
+    return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' +
+           d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+
+  async function openResumeSessions(t) {
+    await loadFolderSessions(t); // freshen
+    const list = t.folderSessions;
+    if (!list.length) { App.toast('No previous sessions in this folder.', true); return; }
+
+    const ov = document.createElement('div');
+    ov.className = 'modal-overlay';
+    ov.innerHTML = `<div class="modal">
+      <div class="lc-section-head">Resume a session <span class="muted">in ${App.esc(t.folder)}</span></div>
+      <div class="lc-session-list">${list.map((s, i) => `
+        <button class="lc-session-row" data-idx="${i}">
+          <span class="lc-session-label">${App.esc(s.label)}</span>
+          <span class="lc-session-meta">${App.esc(fmtSessionTime(s.updated))} · ${App.esc(String(s.sessionId).slice(0, 8))}</span>
+        </button>`).join('')}</div>
+      <div class="modal-actions"><button class="btn" data-act="cancel">Cancel</button></div>
+    </div>`;
+    const close = () => ov.remove();
+    ov.querySelector('[data-act="cancel"]').addEventListener('click', close);
+    ov.addEventListener('click', e => { if (e.target === ov) close(); });
+    ov.querySelectorAll('.lc-session-row').forEach(row =>
+      row.addEventListener('click', () => { close(); resumePickedSession(t, list[+row.dataset.idx].sessionId); }));
+    document.body.appendChild(ov);
+  }
+
+  async function resumePickedSession(t, sessionId) {
+    if (t.running) {
+      const ok = await App.confirm('Stop the current session and resume the selected one?', 'Resume');
+      if (!ok) return;
+    }
+    if (G.cfg.claudeInstalled === false) { App.toast('Claude Code CLI not found — install it to resume.', true); return; }
+    if (G.cfg.apiKeyPresent) {
+      const ok = await App.confirm(
+        'ANTHROPIC_API_KEY is set in your environment.\n\n' +
+        'Resume with it removed so your Claude subscription is used (not metered API billing)?',
+        'Resume on subscription');
+      if (!ok) return;
+    }
+    const term = createTerm(t);
+    try {
+      await Bridge.call('livecode.resumeSession', {
+        tabId: t.tabId, folder: t.folder, sessionId,
+        shell: t.shell, autoApprove: t.autoApprove, bypass: t.bypass,
+        cols: term.cols, rows: term.rows
+      }, 0);
+      t.running = true;
+      t.canResume = true;
+      t.resumedPick = true;
+      t.activeFolder = t.folder;
+      t.isolated = false;
+      updateButtons(); renderTabBar(); refreshControlLocks(t);
+      App.toast('Resuming session ' + String(sessionId).slice(0, 8) + '…');
+      pollMetrics();
+      term.focus();
+    } catch (e) {
+      App.toast('Failed to resume session: ' + e.message, true);
+      disposeTabTerm(t); t.running = false; t.resumedPick = false; updateButtons(); refreshControlLocks(t);
+    }
+  }
+
   async function browse() {
     const t = activeTab();
     if (!t) return;
@@ -439,7 +532,7 @@ window.Views.livecode = (function () {
       if (r && r.path) {
         t.folder = r.path;
         const inp = document.getElementById('lc-folder'); if (inp) inp.value = r.path;
-        updateButtons(); saveConfig(); loadAgents(); renderTabBar();
+        updateButtons(); saveConfig(); loadAgents(); loadFolderSessions(t); renderTabBar();
       }
     } catch (e) {
       App.toast('Folder picker unavailable — type the path instead. (' + e.message + ')', true);
@@ -463,6 +556,21 @@ window.Views.livecode = (function () {
     } catch (e) {
       App.toast('File picker unavailable — type the path instead.', true);
     }
+  }
+
+  // Single authority for control locking: Custom Agent is disabled when an Agent is selected OR a
+  // picked-resume session is running; Shell + Model are disabled only while a picked-resume runs.
+  function refreshControlLocks(t) {
+    if (!t) return;
+    const lockResume = t.resumedPick && t.running;
+    const ca = document.getElementById('lc-custom-agent');
+    const cab = document.getElementById('lc-custom-agent-browse');
+    const caDisabled = !!t.agent || lockResume;
+    if (ca) ca.disabled = caDisabled;
+    if (cab) cab.disabled = caDisabled;
+    document.querySelectorAll('[data-shell]').forEach(b => { b.disabled = lockResume; });
+    const model = document.getElementById('lc-model');
+    if (model) model.disabled = lockResume;
   }
 
   function updateButtons() {
@@ -553,8 +661,9 @@ window.Views.livecode = (function () {
       if (!t) return;
       if (t.term.inst) t.term.inst.write(`\r\n\x1b[90m[process exited with code ${d.code}]\x1b[0m\r\n`);
       t.running = false;
+      t.resumedPick = false;
       renderTabBar();
-      if (t.tabId === activeTabId) updateButtons();
+      if (t.tabId === activeTabId) { updateButtons(); refreshControlLocks(t); }
     });
   }
 
@@ -760,7 +869,8 @@ window.Views.livecode = (function () {
     if (!t) return;
     try { await Bridge.call('livecode.stop', { tabId: t.tabId }, 0); } catch { /* ignore */ }
     t.running = false;
-    updateButtons(); renderTabBar();
+    t.resumedPick = false;
+    updateButtons(); renderTabBar(); refreshControlLocks(t);
   }
 
   return { render: load, focusTab };
