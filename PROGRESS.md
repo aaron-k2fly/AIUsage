@@ -1,6 +1,33 @@
 # PROGRESS — AI Usage Tracker
 
-_Last updated: 2026-07-15_
+_Last updated: 2026-07-16_
+
+## 2026-07-16: Live Code — agent/custom-agent lock + Resume Sessions picker — branch `LIVE-CODE-SESSION`
+
+Two refinements. Design/plan:
+`docs/superpowers/specs/2026-07-16-live-code-agent-lock-resume-sessions-design.md` /
+`docs/superpowers/plans/2026-07-16-live-code-agent-lock-resume-sessions.md`.
+
+1. **Agent ↔ Custom Agent exclusion** — selecting an Agent from the dropdown clears + disables the
+   Custom Agent input (re-enabled when set back to `(none)`). `refreshControlLocks(t)` in
+   `livecode.js` is now the single authority for control disabled-states.
+2. **Resume Sessions** — a button beside Browse lists the working folder's existing Claude Code
+   sessions and resumes a chosen one:
+   - **Backend**: `Scanner/FolderSessions.cs` (`List(folder,max)` enumerates
+     `~/.claude/projects/<encoded-cwd>/*.jsonl`, newest-first) + `SessionAggregator.FirstUserPrompt`
+     (first string-content user prompt as the label). New actions `livecode.sessionsInFolder`
+     (`{sessions:[{sessionId,label,updated}]}`) and `livecode.resumeSession` (types
+     `claude --resume <id>` interactively via `BuildResumeSessionCommand` — no prompt).
+   - **Frontend**: the button is disabled when the folder has no sessions (`loadFolderSessions`); the
+     modal (`openResumeSessions`) lists label + time + short id; picking a row (`resumePickedSession`)
+     confirms-replace if the tab is running, resumes into the active tab, sets `resumedPick`, and
+     locks Shell/Model/Custom Agent until the session stops (stop/exit clear it).
+
+Decisions: resume into the current tab (confirm-replace); interactive `--resume` (no auto-continue);
+disable Resume Sessions when the folder has none; agent→custom-agent exclusion is one-directional.
+Build clean (0/0); backend verified headlessly (`sessionsInFolder` returns real first-prompt labels
+for the last-used folder; no errors). **GUI click-through pending at the machine.** Docs updated in
+the same change.
 
 ## 2026-07-15: Live Code — same-folder warning + git-worktree isolation — branch `LIVE-CODE-SESSION`
 
