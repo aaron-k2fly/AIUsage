@@ -208,6 +208,36 @@ public sealed class SessionAggregator(TicketKeyInferrer inferrer)
         return (info.ContextTokens, info.Model);
     }
 
+    /// <summary>The first real user prompt in a transcript (string message.content — array content is
+    /// tool-result noise), collapsed to one line and trimmed to <paramref name="maxLen"/> chars. Null
+    /// if none/unreadable. Used to label sessions in the Resume Sessions picker.</summary>
+    public static string? FirstUserPrompt(string filePath, int maxLen = 90)
+    {
+        try
+        {
+            foreach (var line in File.ReadLines(filePath))
+            {
+                if (string.IsNullOrWhiteSpace(line)) continue;
+                JsonDocument doc;
+                try { doc = JsonDocument.Parse(line); } catch (JsonException) { continue; }
+                using (doc)
+                {
+                    var root = doc.RootElement;
+                    if (root.ValueKind != JsonValueKind.Object) continue;
+                    if (!TryGetString(root, "type", out var type) || type != "user") continue;
+                    if (!root.TryGetProperty("message", out var msg) || msg.ValueKind != JsonValueKind.Object) continue;
+                    if (!msg.TryGetProperty("content", out var content) || content.ValueKind != JsonValueKind.String) continue;
+                    var text = content.GetString();
+                    if (string.IsNullOrWhiteSpace(text)) continue;
+                    var collapsed = System.Text.RegularExpressions.Regex.Replace(text.Trim(), @"\s+", " ");
+                    return collapsed.Length <= maxLen ? collapsed : collapsed[..maxLen].TrimEnd() + "…";
+                }
+            }
+        }
+        catch { /* IO error — best effort */ }
+        return null;
+    }
+
     private static bool TryGetString(JsonElement el, string name, out string value)
     {
         if (el.TryGetProperty(name, out var p) && p.ValueKind == JsonValueKind.String)
