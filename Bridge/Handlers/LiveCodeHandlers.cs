@@ -149,6 +149,16 @@ public static class LiveCodeHandlers
             return Task.FromResult<object?>(new { isGitRepo = GitWorktree.IsGitRepo(folder) });
         });
 
+        // Existing Claude Code sessions whose transcript lives in a folder — for the Resume Sessions
+        // picker. Empty when the folder has no transcripts.
+        router.Register("livecode.sessionsInFolder", payload =>
+        {
+            var folder = SessionHandlers.GetString(payload, "folder");
+            var sessions = FolderSessions.List(folder)
+                .Select(s => new { sessionId = s.SessionId, label = s.Label, updated = s.UpdatedIso });
+            return Task.FromResult<object?>(new { sessions });
+        });
+
         // --- live terminal (per tab) ---
         // Spawns the chosen shell in a pseudo-console for the tab, then (if a ticket is selected)
         // types a `claude …` command that works the ticket. ANTHROPIC_API_KEY is stripped from the
@@ -189,6 +199,31 @@ public static class LiveCodeHandlers
             var kickoff = BuildResumeCommand(shell.Kind, resumeId!, model, agent, permissionMode);
             return Task.FromResult<object?>(
                 LaunchInPty(router, tabId, shell, folder, cols, rows, kickoff, permissionMode, resumeId!, model, ticketKey, trackSession: true));
+        });
+
+        // Resume a specific past session chosen in the Resume Sessions picker, in the tab's terminal
+        // (interactive `claude --resume <id>`, no continue prompt).
+        router.Register("livecode.resumeSession", payload =>
+        {
+            var tabId = RequireTabId(payload);
+            var shellReq = SessionHandlers.GetString(payload, "shell") ?? "powershell";
+            var folder = SessionHandlers.GetString(payload, "folder");
+            var sessionId = SessionHandlers.GetString(payload, "sessionId");
+            if (string.IsNullOrWhiteSpace(sessionId))
+                throw new ArgumentException("sessionId is required.");
+            if (!string.IsNullOrWhiteSpace(folder) && !Directory.Exists(folder))
+                throw new ArgumentException($"Folder not found: {folder}");
+            TryGetBool(payload, "autoApprove", out var autoApprove);
+            TryGetBool(payload, "bypass", out var bypass);
+            var cols = (short)GetInt(payload, "cols", 120);
+            var rows = (short)GetInt(payload, "rows", 30);
+            var permissionMode = bypass ? "bypassPermissions" : autoApprove ? "acceptEdits" : null;
+
+            var shell = ShellResolver.Resolve(shellReq);
+            var kickoff = BuildResumeSessionCommand(shell.Kind, sessionId!, permissionMode);
+            return Task.FromResult<object?>(
+                LaunchInPty(router, tabId, shell, folder, cols, rows, kickoff, permissionMode, sessionId!,
+                            model: null, ticketKey: null, trackSession: true));
         });
 
         // Re-attach after navigating away and back: returns the tab's buffered output (base64) to
@@ -569,6 +604,17 @@ public static class LiveCodeHandlers
         if (permissionMode is not null) sb.Append(" --permission-mode ").Append(permissionMode);
         // Positional prompt: resume AND immediately tell Claude to continue the work.
         sb.Append(' ').Append(ShellQuote(shellKind, "continue"));
+        return sb.ToString();
+    }
+
+    /// <summary>`claude --resume <id>` (+ permission flag) with NO positional prompt — reopens the
+    /// chosen session interactively (used by the Resume Sessions picker). `shellKind` is kept for
+    /// signature symmetry with <see cref="BuildResumeCommand"/>.</summary>
+    private static string BuildResumeSessionCommand(string shellKind, string sessionId, string? permissionMode)
+    {
+        _ = shellKind;
+        var sb = new StringBuilder("claude --resume ").Append(sessionId);
+        if (permissionMode is not null) sb.Append(" --permission-mode ").Append(permissionMode);
         return sb.ToString();
     }
 
