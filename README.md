@@ -29,6 +29,8 @@ SQLite file.
 - **Export to Excel** — one-click `.xlsx` export of Sessions, Manual entries, and Tickets.
 - **Read-only JIRA integration** — enrich ticket keys with summary/status/type/etc. The app never
   writes to JIRA.
+- **Live Code** — drive interactive Claude Code sessions right inside the app, kicked off from a
+  selected ticket (see below).
 
 ---
 
@@ -41,6 +43,35 @@ SQLite file.
   not survive copying the folder to another machine or user — by design it degrades to "not set".
 - **JIRA access is read-only.**
 - Headline token figures exclude cache-read tokens.
+
+---
+
+## Live Code sessions
+
+The **Live Code** page runs interactive Claude Code sessions inside the app, under your Claude
+**subscription** auth (`ANTHROPIC_API_KEY` is stripped so you're never billed for metered API
+usage), started from a selected JIRA ticket. Starting a session auto-links the ticket to the work.
+
+- **A real terminal** — the chosen shell (PowerShell or Git Bash) is hosted in a Windows
+  pseudo-console (ConPTY) and streamed to an embedded [xterm.js](https://xtermjs.org/) terminal;
+  a `claude` session is launched on the ticket.
+- **Multiple sessions as tabs** — each tab is an independent session with its own terminal,
+  controls, and token/context readout. A sidebar dot shows whether any session is running (green /
+  red), and hovering it lists the live sessions.
+- **Lifecycle** — Stop (kills the process tree, keeps the session resumable), Resume, and Reset
+  (restart fresh on the same ticket). Sessions survive navigating away and back.
+- **Same-folder safeguard + git-worktree isolation** — if two tabs would run agents in the same
+  folder at once, the app warns you and can run the new session in an isolated `git worktree`
+  (auto-removed on close only if it's clean), so concurrent agents don't collide.
+- **Agents** — pick an agent from `.claude/agents` (project + user), or point to a custom agent
+  `.md` file.
+- **Resume Sessions** — browse the existing Claude Code sessions for a folder (labelled by their
+  first prompt) and resume any one of them.
+- **Metrics** — per-session tokens and context-window usage (used-of-max), plus your plan, weekly
+  tokens, and the top active Claude Code sessions.
+
+> Live Code is **Windows-only** (it relies on ConPTY) and requires the
+> [Claude Code CLI](https://claude.ai/code) to be installed and on `PATH`.
 
 ---
 
@@ -64,7 +95,7 @@ On first launch, open **Settings** and add your JIRA site URL, email, and an API
 dotnet run -- --scan                 # run the transcript scanner, print counts
 dotnet run -- --sql "SELECT ..."     # read-only query (PRAGMA query_only=ON enforced)
 dotnet run -- --set <key> <value>    # write a Settings row (use jira_token for the DPAPI secret)
-dotnet run -- --route <page>         # open directly on a page (dashboard|sessions|manual|tickets|settings)
+dotnet run -- --route <page>         # open directly on a page (dashboard|sessions|manual|tickets|livecode|settings)
 ```
 
 ### Build a single-file, self-contained executable
@@ -96,6 +127,9 @@ two halves talk over Photino's string message bus as JSON.
   `file://` in WebView2); a hashchange router with one self-registering module per page. Chart.js
   is vendored locally (no CDN).
 - **JIRA** (`Jira/`) — read-only JIRA Cloud REST; DPAPI-protected token.
+- **Live Code** (`Terminal/`, `Bridge/Handlers/LiveCodeHandlers.cs`) — hosts shells in a
+  pseudo-console (ConPTY via Porta.Pty), streams output to xterm.js over an event channel, and
+  manages per-tab sessions, git-worktree isolation, and session resume.
 
 Two companion docs carry the details:
 - `CLAUDE.md` — big-picture architecture and conventions.
@@ -106,6 +140,7 @@ Two companion docs carry the details:
 ## Tech stack
 
 .NET 10 · Photino.NET · WebView2 · Microsoft.Data.Sqlite · vanilla JS · Chart.js (vendored) ·
+xterm.js (vendored) · Porta.Pty (ConPTY, for Live Code) ·
 DPAPI (`System.Security.Cryptography.ProtectedData`).
 
 ---
