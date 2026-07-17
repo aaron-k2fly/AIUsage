@@ -181,3 +181,145 @@ label { display: block; font-size: 12.5px; color: var(--muted); margin: 12px 0 4
 
 .chart-box { position: relative; height: 260px; }
 .footnote { font-size: 11.5px; color: var(--muted); margin-top: 6px; }
+
+/* --- Live Code page --- */
+.lc-section-head { font-size: 13px; font-weight: 600; margin-bottom: 10px; }
+.lc-ticket-list { display: flex; flex-direction: column; gap: 8px; }
+.lc-ticket {
+  display: flex; align-items: center; gap: 10px; text-align: left; width: 100%;
+  border: 1px solid var(--border); background: #fff; border-radius: 6px;
+  padding: 9px 12px; cursor: pointer;
+}
+.lc-ticket:hover { border-color: var(--accent); }
+.lc-ticket.selected { border-color: var(--accent); background: var(--accent-soft); }
+.lc-ticket-sum { flex: 1; color: var(--text); }
+.lc-ticket-status { white-space: nowrap; font-size: 12px; }
+
+.lc-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.lc-label { display: inline; margin: 0; color: var(--muted); font-size: 12.5px; white-space: nowrap; }
+.lc-grow { flex: 1; width: auto; min-width: 160px; }
+.lc-row input, .lc-row select { width: auto; }
+.lc-check { display: inline-flex; align-items: center; gap: 6px; margin: 0; color: var(--text); font-size: 13px; }
+.lc-check input { width: auto; }
+
+.lc-terminal-wrap { padding: 0; overflow: hidden; }
+.lc-terminal {
+  min-height: 320px; height: 42vh;
+  background: #1e1e1e; color: #d4d4d4;
+  font-family: "Cascadia Mono", "Consolas", monospace; font-size: 13px;
+  padding: 12px; overflow: auto;
+}
+.lc-terminal.empty {
+  display: flex; align-items: center; justify-content: center;
+  color: #8a8a8a; background: #1e1e1e; text-align: center;
+}
+/* Force a real (non-overlay) scrollbar in the terminal viewport. WebView2 defaults to an
+   overlay scrollbar with zero layout width, so xterm's FitAddon computes full-width columns
+   and the last characters render underneath it. Giving the scrollbar real width makes FitAddon
+   reserve a column for it, ending the overlap. */
+.lc-terminal .xterm-viewport::-webkit-scrollbar { width: 12px; }
+.lc-terminal .xterm-viewport::-webkit-scrollbar-track { background: #1e1e1e; }
+.lc-terminal .xterm-viewport::-webkit-scrollbar-thumb { background: #4a4a4a; border-radius: 6px; }
+.lc-terminal .xterm-viewport::-webkit-scrollbar-thumb:hover { background: #5a5a5a; }
+
+.lc-metrics { display: flex; gap: 28px; flex-wrap: wrap; }
+.lc-metric-label { color: var(--muted); font-size: 12.5px; }
+.lc-metric-val { font-size: 20px; font-weight: 650; margin-top: 2px; }
+.lc-metric-sub { color: var(--muted); font-size: 11.5px; margin-top: 3px; }
+.lc-active { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+.lc-active-list { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 6px; font-size: 13px; }
+.lc-active-item { display: inline-flex; gap: 6px; align-items: baseline; }
+
+/* Tab bar (one session per tab). */
+.lc-tabbar-panel { padding: 8px 10px; }
+.lc-tabbar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.lc-tab {
+  display: inline-flex; align-items: center; gap: 7px;
+  border: 1px solid var(--border); background: #fff; border-radius: 7px;
+  padding: 6px 8px 6px 10px; cursor: pointer; font-size: 13px; user-select: none;
+}
+.lc-tab:hover { border-color: var(--accent); }
+.lc-tab.active { border-color: var(--accent); background: var(--accent-soft); }
+.lc-tab-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--danger); flex-shrink: 0; }
+.lc-tab-dot.running { background: var(--ok); box-shadow: 0 0 5px var(--ok); }
+.lc-tab-label { font-weight: 600; color: var(--text); }
+.lc-tab-shell { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.lc-tab-wt { color: var(--accent); font-size: 12px; }
+
+/* Resume Sessions picker modal */
+.lc-session-list { display: flex; flex-direction: column; gap: 6px; max-height: 50vh; overflow-y: auto; margin: 10px 0 4px; }
+.lc-session-row {
+  display: flex; flex-direction: column; gap: 2px; text-align: left; width: 100%;
+  border: 1px solid var(--border); background: #fff; border-radius: 6px; padding: 8px 10px; cursor: pointer;
+}
+.lc-session-row:hover { border-color: var(--accent); background: var(--accent-soft); }
+.lc-session-label { color: var(--text); }
+.lc-session-meta { color: var(--muted); font-size: 11.5px; }
+.lc-tab-close {
+  border: none; background: transparent; color: var(--muted); cursor: pointer;
+  font-size: 15px; line-height: 1; padding: 0 2px; border-radius: 4px;
+}
+.lc-tab-close:hover { background: var(--danger); color: #fff; }
+.lc-newtab {
+  border: 1px dashed var(--border); background: transparent; color: var(--muted);
+  border-radius: 7px; padding: 6px 12px; cursor: pointer; font-size: 13px;
+}
+.lc-newtab:hover { border-color: var(--accent); color: var(--accent); }
+
+/* One terminal per tab; only the active one is shown (visibility toggled inline). */
+.lc-terminals .lc-terminal { width: 100%; }
+
+/* Per-tab "this session" tokens/context strip. */
+.lc-tab-metrics { gap: 20px; font-size: 13px; color: var(--text); }
+.lc-tab-metrics .lc-metric-label { font-weight: 600; }
+.lc-tab-metrics b { font-weight: 650; }
+
+.lc-warn {
+  border-color: #f0c98a; background: #fdf5e6; color: #8a5a00;
+  display: flex; align-items: center; gap: 6px;
+}
+
+/* Live Code session→ticket links (auto-created on start) — match the AI badge. */
+.badge.livecode { background: #ece9fb; color: #4a3aa7; font-weight: 600; }
+
+/* Sidebar indicator dot next to "Live Code": red = no session, green = running. */
+.nav-dot {
+  display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--danger); margin-left: 4px; vertical-align: middle;
+}
+.nav-dot.on { background: var(--ok); box-shadow: 0 0 5px var(--ok); }
+
+/* Sidebar hover panel: live sessions across all tabs. Anchored to the Live Code nav item. */
+.nav-item { position: relative; }
+.lc-nav-popover {
+  display: none; position: absolute; left: 100%; top: 0; margin-left: 6px; z-index: 1100;
+  min-width: 240px; max-width: 340px;
+  background: var(--panel); color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px; padding: 8px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.22);
+}
+.lc-nav-popover.show { display: block; }
+.lc-nav-pop-head { font-size: 11.5px; font-weight: 600; color: var(--muted); padding: 2px 6px 6px; }
+.lc-nav-pop-row {
+  display: flex; align-items: center; gap: 8px; padding: 7px 6px; border-radius: 6px; cursor: pointer;
+}
+.lc-nav-pop-row:hover { background: var(--accent-soft); }
+.lc-nav-pop-row .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--danger); flex-shrink: 0; }
+.lc-nav-pop-row .dot.running { background: var(--ok); box-shadow: 0 0 5px var(--ok); }
+.lc-nav-pop-row .lbl { font-weight: 600; }
+.lc-nav-pop-row .fld { color: var(--muted); font-size: 12px; margin-left: auto; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lc-nav-pop-empty { color: var(--muted); font-size: 12.5px; padding: 6px; }
+
+/* --- confirm modal --- */
+.btn-danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+.btn-danger:hover { background: #c23a3a; color: #fff; }
+.modal-overlay {
+  position: fixed; inset: 0; background: rgba(20, 24, 33, .45);
+  display: flex; align-items: center; justify-content: center; z-index: 1000;
+}
+.modal {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  padding: 20px; max-width: 460px; width: calc(100% - 48px); box-shadow: 0 12px 40px rgba(0,0,0,.25);
+}
+.modal-msg { white-space: pre-line; line-height: 1.5; margin-bottom: 16px; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 8px; }

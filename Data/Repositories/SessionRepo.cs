@@ -125,6 +125,34 @@ public static class SessionRepo
         cmd.ExecuteNonQuery();
     }
 
+    /// <summary>
+    /// Link a Live Code session to the ticket it was started for, before the transcript is scanned.
+    /// Inserts a placeholder Sessions row (keyed by the launched --session-id) so the FK holds; the
+    /// scanner later accumulates the real tokens into the same row (ON CONFLICT(id)). The link uses
+    /// source 'livecode' so the allowlist purge (which only removes 'auto') never drops it.
+    /// </summary>
+    public static void LinkLiveCodeSession(SqliteConnection conn, string sessionId, string filePath,
+        string? projectDir, string ticketKey)
+    {
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            INSERT OR IGNORE INTO Sessions (id, file_path, project_dir, review_state)
+                VALUES ($sid, $fp, $dir, 'linked');
+            UPDATE Sessions SET file_path = $fp, project_dir = COALESCE($dir, project_dir),
+                                review_state = 'linked'
+                WHERE id = $sid;
+            INSERT OR IGNORE INTO Tickets(key) VALUES ($key);
+            INSERT INTO SessionTicketLinks(session_id, ticket_key, source, inferred_from)
+                VALUES ($sid, $key, 'livecode', NULL)
+                ON CONFLICT(session_id, ticket_key) DO UPDATE SET source = 'livecode';
+            """;
+        cmd.Parameters.AddWithValue("$sid", sessionId);
+        cmd.Parameters.AddWithValue("$fp", filePath);
+        cmd.Parameters.AddWithValue("$dir", (object?)projectDir ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$key", ticketKey);
+        cmd.ExecuteNonQuery();
+    }
+
     public static void AssignTicket(SqliteConnection conn, string sessionId, string ticketKey)
     {
         using var cmd = conn.CreateCommand();

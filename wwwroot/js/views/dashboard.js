@@ -87,50 +87,12 @@ window.Views.dashboard = (function () {
           </span></h2>
           <div class="chart-box"><canvas id="ch-top"></canvas></div>
           <div class="footnote">Multi-ticket sessions count fully against each linked ticket.</div></div>
-        <div id="share-slot" style="display:none"></div>
         <div class="panel"><h2>Ticket type × AI activity</h2>
           <div class="chart-box"><canvas id="ch-matrix"></canvas></div>
           <div class="footnote">Issue types appear after tickets are synced from JIRA.</div></div>
       </div>`}`;
 
-    if (hasData) {
-      renderCharts(s);
-      loadShare(); // JIRA-dependent; fills #share-slot asynchronously so an
-                   // unreachable host never delays the local charts above
-    }
-  }
-
-  async function loadShare() {
-    let share;
-    try {
-      share = await Bridge.call('stats.share');
-    } catch {
-      return; // optional widget — degrade silently
-    }
-    const slot = document.getElementById('share-slot');
-    if (!share || !slot) return; // JIRA unconfigured/unreachable, or user navigated away
-
-    const pct = (100 * share.aiTouched / share.total).toFixed(0);
-    slot.style.display = '';
-    slot.innerHTML = `<div class="panel"><h2>Share of tickets AI-assisted (90d)</h2>
-      <div class="chart-box"><canvas id="ch-share"></canvas></div>
-      <div class="footnote">${share.aiTouched} AI-touched of ${share.total} matching the JQL in Settings.</div></div>`;
-    makeChart('ch-share', {
-      type: 'doughnut',
-      data: {
-        labels: [`AI-assisted (${pct}%)`, 'Other tickets'],
-        datasets: [{
-          data: [share.aiTouched, Math.max(0, share.total - share.aiTouched)],
-          backgroundColor: [BLUE, GRID],
-          borderColor: SURFACE,
-          borderWidth: 2
-        }]
-      },
-      options: {
-        maintainAspectRatio: false,
-        plugins: { legend: { position: 'right', labels: { color: '#52514e', boxWidth: 12 } } }
-      }
-    });
+    if (hasData) renderCharts(s);
   }
 
   function renderCharts(s) {

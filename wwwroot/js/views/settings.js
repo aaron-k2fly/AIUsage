@@ -19,8 +19,6 @@ window.Views.settings = (function () {
         <label>API token ${s.jiraTokenSet ? '<span class="badge confirmed">set</span>' : '<span class="badge dead">not set</span>'}</label>
         <input id="set-token" type="password" placeholder="${s.jiraTokenSet ? 'leave empty to keep current token' : 'paste a JIRA API token'}">
         <div class="footnote">Stored DPAPI-encrypted for your Windows user. Create tokens at id.atlassian.com → Security → API tokens.</div>
-        <label>JQL for the “share of tickets AI-assisted” denominator</label>
-        <input id="set-jql" value="${App.esc(s.jiraShareJql)}">
         <label>JQL for “Fetch more from JIRA” (imports tickets into the Tickets list)</label>
         <input id="set-fetch-jql" value="${App.esc(s.jiraFetchJql)}">
         <div style="margin-top:12px; display:flex; gap:8px">
@@ -51,7 +49,6 @@ window.Views.settings = (function () {
         jiraSiteUrl: document.getElementById('set-site').value.trim(),
         jiraEmail: document.getElementById('set-email').value.trim(),
         jiraToken: document.getElementById('set-token').value,
-        jiraShareJql: document.getElementById('set-jql').value.trim(),
         jiraFetchJql: document.getElementById('set-fetch-jql').value.trim(),
         scanPaths: document.getElementById('set-paths').value.trim(),
         projectKeyAllowlist: document.getElementById('set-allowlist').value.trim().toUpperCase(),

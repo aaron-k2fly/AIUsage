@@ -1,6 +1,316 @@
 # PROGRESS — AI Usage Tracker
 
-_Last updated: 2026-07-13_
+_Last updated: 2026-07-16_
+
+## 2026-07-16: Live Code — agent/custom-agent lock + Resume Sessions picker — branch `LIVE-CODE-SESSION`
+
+Two refinements. Design/plan:
+`docs/superpowers/specs/2026-07-16-live-code-agent-lock-resume-sessions-design.md` /
+`docs/superpowers/plans/2026-07-16-live-code-agent-lock-resume-sessions.md`.
+
+1. **Agent ↔ Custom Agent exclusion** — selecting an Agent from the dropdown clears + disables the
+   Custom Agent input (re-enabled when set back to `(none)`). `refreshControlLocks(t)` in
+   `livecode.js` is now the single authority for control disabled-states.
+2. **Resume Sessions** — a button beside Browse lists the working folder's existing Claude Code
+   sessions and resumes a chosen one:
+   - **Backend**: `Scanner/FolderSessions.cs` (`List(folder,max)` enumerates
+     `~/.claude/projects/<encoded-cwd>/*.jsonl`, newest-first) + `SessionAggregator.FirstUserPrompt`
+     (first string-content user prompt as the label). New actions `livecode.sessionsInFolder`
+     (`{sessions:[{sessionId,label,updated}]}`) and `livecode.resumeSession` (types
+     `claude --resume <id>` interactively via `BuildResumeSessionCommand` — no prompt).
+   - **Frontend**: the button is disabled when the folder has no sessions (`loadFolderSessions`); the
+     modal (`openResumeSessions`) lists label + time + short id; picking a row (`resumePickedSession`)
+     confirms-replace if the tab is running, resumes into the active tab, sets `resumedPick`, and
+     locks Shell/Model/Custom Agent until the session stops (stop/exit clear it).
+
+Decisions: resume into the current tab (confirm-replace); interactive `--resume` (no auto-continue);
+disable Resume Sessions when the folder has none; agent→custom-agent exclusion is one-directional.
+Build clean (0/0); backend verified headlessly (`sessionsInFolder` returns real first-prompt labels
+for the last-used folder; no errors). **GUI click-through pending at the machine.** Docs updated in
+the same change.
+
+## 2026-07-15: Live Code — same-folder warning + git-worktree isolation — branch `LIVE-CODE-SESSION`
+
+Safeguard for the new multi-tab sessions: when two tabs would run agents in the **same working
+folder** at once, warn the user and offer to isolate the new session in a git worktree. Design:
+`docs/superpowers/specs/2026-07-15-live-code-same-folder-worktree-design.md`; plan:
+`docs/superpowers/plans/2026-07-15-live-code-same-folder-worktree.md`.
+
+- **`Terminal/GitWorktree.cs`** (new): `IsGitRepo`, `Create` (new branch `livecode/<ticket>-<hex>`
+  in a sibling `<repo>-worktrees/…` off HEAD, returns the launch cwd), `TryRemoveIfClean` (removes
+  worktree + branch only if `git status --porcelain` empty AND no commits beyond base). All git via
+  `Process`; verified the exact sequence against a scratch repo (clean → removed; dirty → kept).
+- **Backend** (`LiveCodeHandlers.cs`): `LiveSession.Worktree`; new `livecode.folderInfo`
+  (`{isGitRepo}`); `StartTicketSession` honors an `isolation` param (`"worktree"` → create worktree,
+  launch/transcript/auto-link use its cwd, store on the entry, return `{isolated, worktreePath,
+  folder}`); `closeTab` runs `TryRemoveIfClean` and returns `{worktreeKept, worktreeReason,
+  worktreePath}`; `StopSession` preserves `Worktree` (so Reset reuses it and close can clean up).
+- **Frontend** (`app.js`, `livecode.js`, `app.css`): `App.choose` (multi-button promise modal); each
+  tab tracks `activeFolder`/`isolated`; on Start, `conflictingTab()` (normalized path compare) detects
+  another running tab in the same folder and `resolveIsolation()` shows the git-repo-aware 3-way
+  warning (worktree / same-folder own-risk / cancel), passing `isolation` to the backend. Reset reuses
+  the tab's worktree (`isolation:'none'`, folder = activeFolder). Isolated tabs show a `⑂` marker;
+  closing toasts kept-vs-removed.
+
+Decisions: warn on Start vs currently-running tabs; 3-way dialog; remove-worktree-if-clean-else-keep;
+omit the worktree option for non-git folders. Build clean (0/0); GitWorktree sequence verified in a
+scratch repo; app boots with no errors. **GUI click-through pending at the machine.** Docs
+(`CLAUDE.md`, `.claude/STRUCTURE.md`) updated in the same change.
+
+## 2026-07-15: Live Code — multiple sessions as tabs — branch `LIVE-CODE-SESSION`
+
+The Live Code page now runs **multiple independent Claude Code sessions at once**, one per tab.
+Design/plan docs: `docs/superpowers/specs/2026-07-15-live-code-tabs-design.md` and
+`docs/superpowers/plans/2026-07-15-live-code-tabs.md`.
+
+**Backend (`Bridge/Handlers/LiveCodeHandlers.cs`)** — replaced the singleton session statics with a
+`Dictionary<string, LiveSession>` keyed by a frontend-minted `tabId` (stable across a tab's
+Stop→Resume/Reset), all guarded by the existing `Gate`. Every per-session action
+(`start`/`resume`/`reset`/`stop`/`attach`/`metrics`, `pty.input`/`pty.resize`) now requires a
+`tabId`, and `pty.output`/`pty.exit` events carry it. New actions: `livecode.list` (all live tabs,
+for rebuild + hover panel) and `livecode.closeTab` (dispose + drop entry); `livecode.running` now
+returns `{running, count}`. `stop` keeps the entry (so Resume works); `closeTab` removes it. The
+exit closure identity-checks the session (`ReferenceEquals`) so a superseded/stopped session can't
+clobber a newer one — and since `ConPtySession.Dispose` sets `_disposed=true` before killing (and
+`Exited` only fires when not disposed), an intentional Stop/Reset/close emits **no** spurious
+`pty.exit`.
+
+**Frontend (`wwwroot/js/views/livecode.js`)** — rewrote from one `state` to a `tabs[]` array +
+`activeTabId` (both in the module closure, so they survive navigation). A tab bar (`＋ New tab`,
+soft cap **6**, `×` closes with a confirm when running) sits above a per-active-tab control panel
+(ticket picker, folder, shell/model/agent, Custom Agent, Start/Stop/Resume/Reset, Auto-approve,
+Bypass, and a per-tab "this session" tokens/context readout). One xterm per tab lives in a
+persistent `#lc-terminals` container (only the active tab shown); a single `pty.output`/`pty.exit`
+subscription routes by `tabId`, so background tabs keep streaming and switching is instant.
+`newTab()` inherits last-used defaults; `reconcile()` merges `tabs[]` with `livecode.list` on load;
+`reattachAll()` replays each running tab's buffer; `focusTab(tabId)` is exported for the sidebar.
+Shared bottom panel keeps Plan + week-tokens + active-sessions.
+
+**Sidebar (`wwwroot/js/app.js`, `index.html`, `app.css`)** — the nav dot reflects
+`livecode.running.count` (green ≥1, red = none; the red default was already in CSS). Hovering the
+Live Code nav item shows a popover (`setupNavPopover`) listing live tabs (ticket/`Session N`,
+folder basename, running/stopped); clicking a row calls `Views.livecode.focusTab`.
+
+**Decisions:** per-session metrics moved into each tab; closing a running tab confirms first; new
+tabs inherit last-used defaults; labels = ticket key or `Session N`. Build clean (0/0); backend
+verified headlessly (`livecode.list`/`running{count}`/`attach{tabId}`/`metrics{tabId}` all correct
+in the boot log). **GUI click-through verification pending at the machine.** Docs (`CLAUDE.md`,
+`.claude/STRUCTURE.md`) updated in the same change.
+
+## 2026-07-14: Live Code Session feature — branch `LIVE-CODE-SESSION` (code-complete, GUI verification pending)
+
+New experimental feature: a "Live Code" page (nav item above Settings) that drives an
+interactive Claude Code session under the user's **subscription** auth (no API key),
+kicked off from a selected JIRA ticket. Full design in `PLAN-LIVE-CODE-SESSION.md`.
+All six milestones (M1–M6) are implemented and build clean; the backend is verified
+headlessly. What remains is **GUI verification** at the machine (see the checklist at the
+end of this section) and merging `LIVE-CODE-SESSION` → `main` once happy.
+
+### Repo now under version control
+- `git init` done; baseline commit of v1 on `main`; feature work on branch `LIVE-CODE-SESSION`.
+- Added `.gitignore` (bin/obj, `aiusage.db*`, `.claude/settings.local.json`, OS cruft).
+- Added `.claude/STRUCTURE.md` (detailed file/DB/action/settings reference) alongside `CLAUDE.md`;
+  both carry a note to keep them in sync on structural changes.
+
+### Design decisions (brainstormed 2026-07-14)
+- Interaction: **live interactive terminal** (real `claude` TUI rendered in-page).
+- Confirmations: **manual/auto toggle**; `bypassPermissions` requires an explicit confirm dialog.
+- Agent selector: **model (`--model`) + optional subagent (`--agent`)** from `.claude/agents`.
+- Kickoff: auto-work the selected ticket; if an agent is chosen, run as that workflow agent.
+- Bottom panel: **usage only** (tokens session/week + context %); plan/tier not exposed by the CLI.
+- Shells: **PowerShell + Git Bash**, with runtime Git-Bash detection → PowerShell fallback.
+- Warn + confirm before starting if `ANTHROPIC_API_KEY` is set (it's stripped from the child env).
+
+### M1 done — page scaffold (commit on branch)
+- New `Live Code` nav item + `wwwroot/js/views/livecode.js`: ticket picker (latest 3 assigned),
+  working-folder picker, shell/model/agent selectors, placeholder terminal + metrics areas.
+- Backend `Bridge/Handlers/LiveCodeHandlers.cs`: `livecode.config/saveConfig/tickets/listAgents/pickFolder`.
+- `Terminal/AgentCatalog.cs` (reads `.claude/agents` frontmatter), `Platform/FolderDialog.cs`
+  (UI-thread-marshalled Photino folder dialog + manual-path fallback).
+
+### M2 done (backend proven) — live terminal transport
+- **Key finding:** the hand-rolled raw-ConPTY implementation (plan approach B) ran the child fine
+  (correct exit codes) but **conhost would not stream output continuously** on this Windows build
+  (26200.8655) — it only flushed on resize/close. Verified via a headless `--pty-test` harness
+  (a `ping` run produced a single 16-byte handshake chunk, then nothing until close).
+- **Resolution:** took the plan's pre-authorized fallback to a maintained library —
+  **`Porta.Pty` 1.0.7** (managed-only NuGet, so the single-file publish story is unchanged).
+  `Terminal/ConPtySession.cs` is now a thin wrapper (same public surface: `Start/Write/Resize/
+  Dispose` + `Output`/`Exited`). `--pty-test` now shows continuous streaming (13 chunks at ~1s
+  intervals for a 6-ping run, `streamed=True`).
+- Streaming transport: `MessageRouter.PushEvent` sends unsolicited `{type:"event",…}` messages;
+  `bridge.js` gained `Bridge.on(event, handler)`. Terminal I/O rides this as `pty.output`/`pty.exit`
+  events + `pty.input`/`pty.resize`/`livecode.start`/`livecode.stop` actions.
+- Frontend: vendored **xterm.js 5.3.0** + fit addon (`wwwroot/lib/xterm.*`, UMD, no CDN — same
+  constraint as Chart.js); `livecode.js` mounts xterm, streams output, sends keystrokes, refits on resize.
+- **Debug CLI:** added `--pty-test` (spawns a pseudo-console, verifies continuous output streaming).
+- **Still to verify in the GUI** (needs a human at the machine): xterm rendering fidelity, typing,
+  and resize. Backend streaming is proven headlessly.
+
+### M3 done (backend verified) — launch Claude Code on the ticket
+- `livecode.start` now spawns the chosen shell then **types a `claude …` command** that works the
+  selected ticket: `claude [--model x] [--agent y] [--permission-mode acceptEdits] '<prompt>'`.
+  Prompt = "Work on JIRA ticket KEY: summary. <description>", flattened to one line (embedded
+  newlines would be read as Enter by the shell) and shell-quoted (single quotes, per-shell escaping).
+- **Ticket description**: schema **v5** adds `Tickets.description`; `JiraClient.FetchIssueAsync`
+  fetches it and flattens the ADF (Atlassian Document Format) tree to plain text;
+  `TicketRepo.UpsertFetched` stores it (COALESCE so bulk search upserts don't wipe it). `livecode.start`
+  fetches the description fresh for the prompt.
+- **Subscription auth**: `ANTHROPIC_API_KEY` is stripped from the child env. Porta.Pty inherits the
+  parent process env and ignores dict-based removal, so `ConPtySession` also **unsets the var in this
+  process** (safe — the app never reads it). Verified headlessly via `--envtest` (`stripped=True`).
+  The var is only stripped, so if a key is present the UI warns + confirms first (`App.confirm` modal;
+  backend reports `apiKeyPresent`).
+- `--envtest` debug verb added; it also incidentally confirms typed-command execution + streaming in
+  interactive cmd.
+- **Still GUI-pending** (needs the machine + a Claude login): real `claude` launch, subscription
+  billing, and kickoff timing under PowerShell/PSReadLine.
+
+### M4 done — confirmations toggle
+- Permission mode at launch: **bypass** (confirmed) → `bypassPermissions` > **auto-approve** →
+  `acceptEdits` > default (manual). `livecode.start` reads `autoApprove` + `bypass`.
+- `bypassPermissions` requires an explicit danger confirm (`App.confirm(..., danger)`) before the box
+  stays checked; bypass never persists (resets each page load).
+- **Best-effort auto-answer** (`Terminal/PromptWatcher.cs`): only active in auto-approve (acceptEdits)
+  mode. ANSI-strips output, detects Claude's confirmation prompts (`❯ 1.`, `(y/n)`, etc.) and injects
+  Enter with a 1.5s cooldown. Documented as fragile — the permission mode is the robust part.
+
+### M5 done — usage metrics panel
+- `livecode.metrics`: runs a light incremental scan, then returns week tokens (DB, current ISO week),
+  the active session's tokens (DB row for its transcript), and a live context-window estimate.
+- Context %: `SessionAggregator.LastContextTokens(file)` (schema-aware) reads the most recent
+  assistant turn's input+cache tokens; context size = 1M for `[1m]` models else 200k.
+- Active transcript located by encoding the session's cwd the way Claude Code does
+  (`:` `\` `/` → `-`) under `~/.claude/projects/<encoded>`, newest `*.jsonl` since start.
+- Frontend polls `livecode.metrics` every 3s while a session runs; panel shows
+  "Tokens this session / this week" and "≈ N% of <size>".
+
+### Fixes 2026-07-14 (from first GUI test)
+- **Git Bash launched WSL and failed** (`execvpe(/bin/bash) failed`): `ShellResolver.FindGitBash`
+  preferred a bare `bash.exe` on PATH = `C:\Windows\System32\bash.exe` (the WSL launcher). Fixed to
+  prefer Git-for-Windows install paths and never use the System32/SysWOW64 shim (`IsSystemShim`).
+  Verified via `--shelltest` → `C:\Program Files\Git\bin\bash.exe`.
+- **Context window showed the wrong value**: `FindActiveTranscript` picked the newest `.jsonl` in the
+  folder's project dir, which is shared by other concurrent Claude Code sessions (incl. the dev's own).
+  Fixed by launching `claude --session-id <guid>` and reading exactly `<guid>.jsonl`. Transcript files
+  are confirmed named `<uuid>.jsonl`.
+- Added `--shelltest` debug verb.
+
+### Fixes 2026-07-14 (round 2, from GUI test)
+- **Terminal text overlapped the scrollbar**: WebView2's overlay scrollbar has zero layout width, so
+  xterm's FitAddon computed full-width columns and the last chars rendered under it. Fixed with CSS
+  forcing a real 12px `::-webkit-scrollbar` on `.lc-terminal .xterm-viewport` (FitAddon then reserves
+  a column for it).
+- **Context-window % used the wrong max**: `ContextSizeFor` returned 200k unless the model string
+  contained "1m", but current models don't encode that (`claude-opus-4-8` is 1M) — so % was ~2×.
+  Per the claude-api reference, current Claude models are **1M except Haiku (200k)**. Now the size is
+  driven by the **selected model** (opus/sonnet → 1M, haiku → 200k), falling back to the transcript's
+  model for "Default". Matches Claude Code's own `Context: 30k/1M` indicator.
+
+### Enhancements 2026-07-14 (round 3)
+- **Stop now kills the whole process tree.** `Kill()` ended only the shell, orphaning `claude`/`node`.
+  `ConPtySession.Dispose` now runs `taskkill /PID <pid> /T /F` (tree kill) so Stop halts everything.
+- **Subscription package + usage reset in the metrics panel.** New `Platform/ClaudeAccount.cs` reads
+  Claude Code's `~/.claude.json` for `organizationType` (→ Team/Enterprise/…), `userRateLimitTier`
+  (→ Max 5x/Pro/…) and `planLimitsEndDate` (usage-limit reset). Surfaced via `livecode.config`
+  (`plan`, `usageResetsAt`) → shown as a "Plan" tile ("Team · Max 5x") and an "usage limits reset
+  <date>" sub-line under weekly tokens. **Only non-secret fields are read** — never org name, email,
+  or tokens. Verified via `--accounttest` (`plan=Team · Max 5x`, `usageResetsAt=2026-07-20`).
+- Added `--accounttest` debug verb.
+
+### Enhancement 2026-07-14 (round 4): context window as "used of max"
+- Investigated whether real per-session/weekly token **limits** are readable — they are **not**
+  (`~/.claude.json`, `policy-limits.json`, `stats-cache.json` hold usage counts + the weekly reset,
+  but no quota numbers or 5-hour session reset; Claude fetches those live as %s from its API).
+- Per the user's choice ("context window only"): the **Context window** metric now shows the one
+  real limit as "`<used> of <max> (N%)`" (e.g. `34K of 1M (3%)`). Session & week stay as plain
+  counts; the weekly reset date stays; the unreadable 5-hour session reset is not shown.
+
+### Enhancements 2026-07-14 (round 5): active sessions, CLI check, auto-link, agents folder
+- **Top-2 active Claude Code sessions** in the metrics panel: `Scanner/ActiveSessions.cs` scans
+  `~/.claude/projects/**` for transcripts written in the last 5 min, returns the 2 newest with folder
+  (from transcript `cwd`) + context used/max/%. Surfaced via `livecode.metrics` (`activeSessions`).
+  The metrics poller is now **page-level** (every 4s while on the page, cleared on navigate via a
+  hashchange hook) so week tokens + active sessions stay live even with no session running.
+- **Claude CLI install check**: `Terminal/ClaudeCli.cs` resolves `claude` on PATH (+ `~/.local/bin`).
+  `livecode.config` returns `claudeInstalled`; the page shows a warning banner and disables Start when
+  it's missing.
+- **Auto-link ticket ↔ session**: on start with a ticket, `SessionRepo.LinkLiveCodeSession` inserts a
+  placeholder Sessions row (keyed by the launched `--session-id`) + a `SessionTicketLinks` row with
+  source `livecode` (kept by the allowlist purge, which only removes `auto`). The scanner later
+  accumulates the real tokens into the same row (ON CONFLICT(id)). New `.badge.livecode` style.
+- **Agents folder**: `AgentCatalog.List(projectDir, customDir)` now also scans a user-chosen folder
+  (the folder itself and its `.claude/agents`), in addition to the working folder's `.claude/agents`
+  and `~/.claude/agents`. New "Agents folder" input + Browse on the page; persisted as
+  `livecode_agents_dir`; passed to `livecode.listAgents`.
+- Shared `SessionAggregator.ContextWindow(model)` + `ReadLive(file)` (cwd/model/context); metrics and
+  active-sessions both use them.
+
+### Enhancements 2026-07-14 (round 6): persist session across navigation, Resume, Start disabled
+- **Terminal now survives navigation.** Root cause of the "black terminal on return": the router wipes
+  `#content` on navigation AND `load()` was calling `livecode.stop` on re-entry (killing the session).
+  Fixed: navigation no longer stops the backend; `ConPtySession` keeps a rolling 512KB output buffer
+  (`Snapshot()`); on return, `livecode.attach` returns the buffer and the UI replays it into a fresh
+  xterm and reconnects (`reattach()`), so the running session continues.
+- **Resume button** (next to Stop): `livecode.resume` re-launches `claude --resume <lastId>` (+ model/
+  agent/permission flags) in the last folder to continue the prior conversation after Stop/exit.
+  `_lastSessionId`/`_lastFolder` survive Stop; `start`/`resume` share a `LaunchInPty` helper.
+- **Start disabled while running** (and Stop only enabled while running, Resume only when idle + a prior
+  session exists) via a single `updateButtons()`.
+
+### Enhancements 2026-07-14 (round 7): Resume-continue, Reset, sidebar dot, real-time active list
+- **Resume now sends "continue"**: `claude --resume <id>` takes a positional prompt, so
+  `BuildResumeCommand` appends `'continue'` — resumes AND tells Claude to continue in one command.
+- **Reset button** (next to Resume, enabled only while running): `livecode.reset` writes `/exit` to the
+  running Claude, waits ~800ms, then **restarts a fresh Claude session on the same ticket** (new
+  session id). start + reset share `StartTicketSession` (ticket fetch + kickoff + auto-link + launch).
+- **Sidebar dot** on the "Live Code" nav item (`#lc-nav-dot`): app.js polls `livecode.running` every 3s
+  (global, all pages) → green when a session is running, red otherwise.
+- **Real-time active sessions**: split out a scan-free `livecode.activeSessions`; the panel now polls it
+  every 2s (`pollActive`) while `livecode.metrics` (with the DB scan) stays at 4s for tokens/context.
+
+### Enhancement 2026-07-14 (round 8): hide finished tickets from the picker
+- The "tickets to work on" picker now fetches 25 assigned tickets (newest first) and drops any with
+  status **Closed / Done / Ready for Release** (`ExcludedTicketStatuses`, case-insensitive,
+  filtered client-side to avoid JQL errors on instances lacking a status name), then shows the top 3.
+
+### Enhancements 2026-07-14 (round 9): ticket required + custom agents actually run
+- **Start now requires a selected ticket** (in addition to a folder + CLI). `updateButtons` gates it;
+  the JIRA-not-configured note says a ticket must be selected.
+- **Custom Agents folder is now actually usable.** `--agent <name>` only resolves agents in
+  `.claude/agents`, so `StartTicketSession`/reset call `AgentCatalog.SyncCustomAgents(agentsDir, folder)`
+  BEFORE the kickoff — copying the folder's `*.md` (and its `.claude/agents`) into the working folder's
+  `.claude/agents` (never overwriting existing ones). Returns `agentsCopied` (toasted). Then the
+  selected agent runs against the ticket via `--agent`.
+
+### Enhancements 2026-07-14 (round 10): Custom Agent file + "use the agent" prompt
+- Replaced the "Agents folder" section with **"Custom Agent"**: Browse now opens a **file picker**
+  (`livecode.pickAgentFile` → `FolderDialog.PickFile`/Photino `ShowOpenFile`) to select an agent `.md`
+  directly; the resolved agent name is shown as a badge next to it (the confirmation that was missing).
+  Persisted as `livecode_custom_agent`; `config` returns `lastCustomAgent` + `lastCustomAgentName`.
+- On start/reset, the chosen agent file is installed into the working folder's `.claude/agents`
+  (`AgentCatalog.InstallAgentFile`, returns its name), and the kickoff prompt is now
+  **"Use the &lt;agent&gt; agent to work on JIRA ticket &lt;KEY&gt;: …"** (prompt-based; the `--agent` flag
+  was removed). Returns `agentUsed` → toasted. The dropdown agent is the fallback when no file is set.
+- Removed `AgentCatalog.SyncCustomAgents` / `livecode_agents_dir` (superseded by the single-file flow).
+
+### Enhancement 2026-07-14 (round 11): removed the "Share of tickets AI-assisted" chart
+- Removed the dashboard AI-share doughnut and its whole backend chain (didn't show useful info):
+  `stats.share` handler + `ComputeShareAsync`, `JiraClient.ApproximateCountAsync`, the Settings
+  "share JQL" input, `jiraShareJql`/`DefaultShareJql`, and unused usings. The `jira_share_jql`
+  settings row (if present in a DB) is now just an unreferenced orphan.
+
+### M6 done — docs & polish
+- `CLAUDE.md` + `.claude/STRUCTURE.md` updated: Live Code architecture, Porta.Pty dependency,
+  ConPTY finding, xterm vendoring, event channel, schema v5, new files/actions/events/settings.
+- Git Bash fallback UX: toast when Git Bash isn't found and PowerShell is used instead.
+- Debug verbs `--pty-test` / `--envtest` documented.
+
+### GUI verification still outstanding (needs a human + Claude login)
+xterm render/typing/resize (M2), real `claude` launch + subscription billing + kickoff timing
+under PowerShell (M3), auto-approve injection hitting real prompts (M4), live metrics values (M5).
+
+---
 
 ## Status: v1 complete + all 2026-07-13 features + published single-file exe
 

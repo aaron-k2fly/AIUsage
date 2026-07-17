@@ -43,7 +43,7 @@ public static class JiraSync
             return false;
         }
         TicketRepo.UpsertFetched(conn, issue.Key, issue.Summary, issue.Status, issue.IssueType,
-            issue.Project, issue.Sprint, issue.Priority, issue.Updated);
+            issue.Project, issue.Sprint, issue.Priority, issue.Updated, issue.Description);
         return true;
     }
 }

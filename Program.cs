@@ -45,6 +45,7 @@ internal static class Program
         Bridge.Handlers.SettingsHandlers.Register(router);
         Bridge.Handlers.StatsHandlers.Register(router);
         Bridge.Handlers.ExportHandlers.Register(router);
+        Bridge.Handlers.LiveCodeHandlers.Register(router, window);
         window.RegisterWebMessageReceivedHandler(router.OnMessage);
 
         var indexPath = Path.Combine(WebAssets.EnsureExtracted(), "index.html");
@@ -60,6 +61,26 @@ internal static class Program
             case "--scan":
                 var r = new Scanner.TranscriptScanner().Run();
                 Console.WriteLine($"sessions={r.Sessions} newFiles={r.NewFiles} updatedFiles={r.UpdatedFiles} skippedFiles={r.SkippedFiles}");
+                break;
+
+            case "--pty-test":
+                RunPtyTest();
+                break;
+
+            case "--envtest":
+                RunEnvTest();
+                break;
+
+            case "--shelltest":
+                var ps = Terminal.ShellResolver.Resolve("powershell");
+                var bash = Terminal.ShellResolver.Resolve("bash");
+                Console.WriteLine($"powershell -> {ps.Exe} (kind={ps.Kind}, fellBack={ps.FellBack})");
+                Console.WriteLine($"bash       -> {bash.Exe} (kind={bash.Kind}, fellBack={bash.FellBack})");
+                break;
+
+            case "--accounttest":
+                var acct = Platform.ClaudeAccount.Read();
+                Console.WriteLine($"plan={acct.Plan ?? "(unknown)"} usageResetsAt={acct.UsageResetsAt?.ToString("o") ?? "(unknown)"}");
                 break;
 
             case "--sql" when args.Length > 1:
@@ -99,8 +120,72 @@ internal static class Program
                 break;
 
             default:
-                Console.WriteLine("Usage: AIUsage [--scan | --sql \"SELECT ...\" | --set <key> <value>]");
+                Console.WriteLine("Usage: AIUsage [--scan | --sql \"SELECT ...\" | --set <key> <value> | --pty-test | --envtest]");
                 break;
         }
+    }
+
+    /// <summary>Headless smoke test for the ConPTY interop (Terminal/ConPtySession): spawns
+    /// cmd.exe in a pseudo-console, feeds it a command, and verifies the output comes back.</summary>
+    private static void RunPtyTest()
+    {
+        var output = new System.Text.StringBuilder();
+        using var exited = new ManualResetEventSlim(false);
+        var code = -1;
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var stamps = new System.Collections.Concurrent.ConcurrentQueue<string>();
+
+        // Exercises the real ConPtySession wrapper. ping streams ~1 line/sec for ~5s; multiple
+        // timestamped chunks arriving during the run prove continuous streaming (not batched at close).
+        using var session = new Terminal.ConPtySession();
+        session.Output += bytes =>
+        {
+            stamps.Enqueue($"{sw.ElapsedMilliseconds}ms:{bytes.Length}B");
+            output.Append(System.Text.Encoding.UTF8.GetString(bytes));
+        };
+        session.Exited += c => { code = c; exited.Set(); };
+
+        session.Start("ping.exe", new[] { "-n", "6", "127.0.0.1" },
+            Environment.CurrentDirectory, envOverrides: null, cols: 120, rows: 30);
+
+        exited.Wait(TimeSpan.FromSeconds(20));
+        var chunks = stamps.Count;
+        Console.WriteLine();
+        Console.WriteLine($"[pty-test] exitCode={code} chunks={chunks} streamed={chunks > 2} " +
+                          $"timeline=[{string.Join(" ", stamps)}]");
+        Environment.ExitCode = code == 0 && chunks > 2 ? 0 : 1;
+    }
+
+    /// <summary>Verifies ANTHROPIC_API_KEY is stripped from a session's child environment
+    /// (so Claude Code uses subscription auth) — the env override must remove, not just skip.</summary>
+    private static void RunEnvTest()
+    {
+        Environment.SetEnvironmentVariable("ANTHROPIC_API_KEY", "SHOULD_BE_GONE");
+        var output = new System.Text.StringBuilder();
+        using var exited = new ManualResetEventSlim(false);
+
+        using var session = new Terminal.ConPtySession();
+        session.Output += b => output.Append(System.Text.Encoding.UTF8.GetString(b));
+        session.Exited += _ => exited.Set();
+
+        // Mirror the real kickoff: type an echo into interactive cmd. Small, time-spread output
+        // captures cleanly, and cmd expands %ANTHROPIC_API_KEY% (empty if stripped).
+        var env = new Dictionary<string, string?> { ["ANTHROPIC_API_KEY"] = null };
+        session.Start("cmd.exe", Array.Empty<string>(), Environment.CurrentDirectory, env, 120, 30);
+        Thread.Sleep(800);
+        session.Write(System.Text.Encoding.UTF8.GetBytes("echo AK=[%ANTHROPIC_API_KEY%]\r"));
+        Thread.Sleep(1000);
+
+        var text = output.ToString();
+        var captured = text.Contains("AK=["); // the echo ran (typed cmd echoed back)
+        // The typed command has the literal "%ANTHROPIC_API_KEY%"; the string "SHOULD_BE_GONE"
+        // can only appear if the child actually had the variable set (i.e. NOT stripped).
+        var stripped = captured && !text.Contains("SHOULD_BE_GONE");
+        var clean = System.Text.RegularExpressions.Regex.Replace(text, @"\x1b\[[0-9;?]*[A-Za-z]", "");
+        clean = System.Text.RegularExpressions.Regex.Replace(clean, @"[^ -~]", "");
+        Console.WriteLine($"[envtest] captured={captured} stripped={stripped} bytes={text.Length}");
+        Console.WriteLine("[envtest] clean-tail: " + clean.Substring(Math.Max(0, clean.Length - 120)));
+        Environment.ExitCode = stripped ? 0 : 1;
     }
 }
