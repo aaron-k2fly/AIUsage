@@ -36,9 +36,22 @@ public static class StatsHandlers
         router.Register("stats.dashboard", _ =>
         {
             object tiles, weekly, tokensWeekly, modelWeekly, activity, topTickets, typeMatrix;
+            object agentUsage, skillUsage, mcpUsage, hookUsage;
 
             using (var conn = Db.Open())
             {
+                // Automation & extensions — total uses across all sessions, per category (top 12).
+                List<Dictionary<string, object?>> UsageByCategory(string category) => Rows.Query(conn, """
+                    SELECT name, SUM(count) AS count
+                    FROM ToolUsage WHERE category = $cat
+                    GROUP BY name ORDER BY count DESC, name
+                    LIMIT 12
+                    """, ("$cat", category));
+                agentUsage = UsageByCategory("agent");
+                skillUsage = UsageByCategory("skill");
+                mcpUsage = UsageByCategory("mcp");
+                hookUsage = UsageByCategory("hook");
+
                 tiles = new
                 {
                     sessionsThisMonth = Rows.Scalar(conn, """
@@ -116,7 +129,11 @@ public static class StatsHandlers
                     """);
             }
 
-            return Task.FromResult<object?>(new { tiles, weekly, tokensWeekly, modelWeekly, activity, topTickets, typeMatrix });
+            return Task.FromResult<object?>(new
+            {
+                tiles, weekly, tokensWeekly, modelWeekly, activity, topTickets, typeMatrix,
+                agentUsage, skillUsage, mcpUsage, hookUsage
+            });
         });
     }
 

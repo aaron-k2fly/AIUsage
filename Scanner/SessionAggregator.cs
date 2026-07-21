@@ -428,6 +428,90 @@ public sealed class SessionAggregator(TicketKeyInferrer inferrer)
         return d;
     }
 
+    /// <summary>Which sub-agents / skills / MCP servers / hooks a session used, each as name→count.
+    /// <see cref="Flatten"/> yields <c>(category, name, count)</c> rows for the ToolUsage table.</summary>
+    public sealed class ToolUsageCounts
+    {
+        public Dictionary<string, int> Agents { get; } = [];
+        public Dictionary<string, int> Skills { get; } = [];
+        public Dictionary<string, int> Mcp { get; } = [];
+        public Dictionary<string, int> Hooks { get; } = [];
+
+        public IEnumerable<(string Category, string Name, int Count)> Flatten() =>
+            Agents.Select(kv => ("agent", kv.Key, kv.Value))
+            .Concat(Skills.Select(kv => ("skill", kv.Key, kv.Value)))
+            .Concat(Mcp.Select(kv => ("mcp", kv.Key, kv.Value)))
+            .Concat(Hooks.Select(kv => ("hook", kv.Key, kv.Value)));
+    }
+
+    /// <summary>Full-file parse of a transcript into per-session sub-agent/skill/MCP/hook counts
+    /// (keyed by sessionId; sidechains skipped) for the ToolUsage table. Set semantics — the caller
+    /// replaces a session's rows with these. Best-effort: malformed lines/IO errors yield partials.
+    /// Agents ← Agent/Task tool_use <c>subagent_type</c>; skills ← Skill tool_use <c>skill</c>;
+    /// MCP ← the server in a <c>mcp__server__tool</c> tool name; hooks ← <c>hook_success</c>/
+    /// <c>hook_error</c> attachment lines (keyed by <c>hookName</c>, fallback <c>hookEvent</c>).</summary>
+    public static Dictionary<string, ToolUsageCounts> ReadToolUsage(string filePath)
+    {
+        var bySession = new Dictionary<string, ToolUsageCounts>();
+        ToolUsageCounts For(string sid) =>
+            bySession.TryGetValue(sid, out var c) ? c : bySession[sid] = new ToolUsageCounts();
+
+        try
+        {
+            foreach (var line in File.ReadLines(filePath))
+            {
+                if (string.IsNullOrWhiteSpace(line)) continue;
+                JsonDocument doc;
+                try { doc = JsonDocument.Parse(line); } catch (JsonException) { continue; }
+                using (doc)
+                {
+                    var root = doc.RootElement;
+                    if (root.ValueKind != JsonValueKind.Object) continue;
+                    if (!TryGetString(root, "sessionId", out var sid) || sid.Length == 0) continue;
+                    if (root.TryGetProperty("isSidechain", out var scv) && scv.ValueKind == JsonValueKind.True) continue;
+                    if (!TryGetString(root, "type", out var type)) continue;
+
+                    if (type == "assistant")
+                    {
+                        if (!root.TryGetProperty("message", out var msg) || msg.ValueKind != JsonValueKind.Object) continue;
+                        if (!msg.TryGetProperty("content", out var content) || content.ValueKind != JsonValueKind.Array) continue;
+                        foreach (var block in content.EnumerateArray())
+                        {
+                            if (block.ValueKind != JsonValueKind.Object) continue;
+                            if (!TryGetString(block, "type", out var bt) || bt != "tool_use") continue;
+                            if (!TryGetString(block, "name", out var name) || name.Length == 0) continue;
+                            var hasInput = block.TryGetProperty("input", out var input) && input.ValueKind == JsonValueKind.Object;
+
+                            if ((name == "Agent" || name == "Task") && hasInput
+                                && TryGetString(input, "subagent_type", out var agent) && agent.Length > 0)
+                                Bump(For(sid).Agents, agent);
+                            else if (name == "Skill" && hasInput
+                                && TryGetString(input, "skill", out var skill) && skill.Length > 0)
+                                Bump(For(sid).Skills, skill);
+                            else if (name.StartsWith("mcp__", StringComparison.Ordinal))
+                            {
+                                var server = name["mcp__".Length..].Split("__", 2)[0];
+                                if (server.Length > 0) Bump(For(sid).Mcp, server);
+                            }
+                        }
+                    }
+                    else if (type == "attachment")
+                    {
+                        if (!root.TryGetProperty("attachment", out var att) || att.ValueKind != JsonValueKind.Object) continue;
+                        if (!TryGetString(att, "type", out var at) || (at != "hook_success" && at != "hook_error")) continue;
+                        var hook = TryGetString(att, "hookName", out var hn) && hn.Length > 0 ? hn
+                                 : (TryGetString(att, "hookEvent", out var he) && he.Length > 0 ? he : null);
+                        if (hook is not null) Bump(For(sid).Hooks, hook);
+                    }
+                }
+            }
+        }
+        catch (IOException) { /* file busy — return partial */ }
+        return bySession;
+
+        static void Bump(Dictionary<string, int> d, string k) => d[k] = d.GetValueOrDefault(k) + 1;
+    }
+
     /// <summary>The first real user prompt in a transcript (string message.content — array content is
     /// tool-result noise), collapsed to one line and trimmed to <paramref name="maxLen"/> chars. Null
     /// if none/unreadable. Used to label sessions in the Resume Sessions picker.</summary>

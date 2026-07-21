@@ -2,6 +2,40 @@
 
 _Last updated: 2026-07-21_
 
+## 2026-07-21: Dashboard — **Automation & extensions** charts — branch `SESSION-DETAIL`
+
+Added four dashboard bar charts (below the existing charts, under an "Automation & extensions" header)
+showing, across ALL sessions: **Sub-agents used**, **Skills used**, **MCP servers used**, **Hooks fired**.
+
+**Design decision — persist, don't re-parse.** This data lives only in the transcripts (the session
+detail page extracts it per-session on demand). Re-parsing every transcript on each dashboard load
+would be far too slow, so the counts are **persisted** in a new `ToolUsage` table and the dashboard
+stays a fast DB query. Chosen approach (**B**): `ToolUsage` is **set-semantics**, derived from a
+**full-file parse** (`SessionAggregator.ReadToolUsage`), and kept **decoupled from the incremental
+token-counting pipeline** (which stays untouched — no reset, no ScanState games, so existing
+token/ticket data is never disturbed).
+
+- **Schema v6**: new `ToolUsage(session_id→Sessions ON DELETE CASCADE, category, name, count)` PK
+  (category ∈ agent/skill/mcp/hook) + `idx_toolusage_cat`.
+- **Scanner**: on each new/changed file, after the token upsert, `ToolUsageRepo.ReplaceForFile` replaces
+  that file's rows (delete-then-insert, FK-guarded). A one-time **backfill** (flagged by the v6 migration
+  via `toolusage_backfill_pending`, since pre-v6 sessions have no rows) re-parses every transcript for
+  ToolUsage on the next scan, then clears the flag.
+- **Extraction** (`ReadToolUsage`): agents ← Agent/Task `subagent_type`; skills ← Skill `skill`; MCP ←
+  the **server** in `mcp__server__tool` names; hooks ← `hook_success`/`hook_error` attachment lines.
+- **stats.dashboard** returns `agentUsage`/`skillUsage`/`mcpUsage`/`hookUsage` (top-12 name→total each).
+- **dashboard.js**: `renderExtCharts` draws four horizontal bar charts (one hue each via `EXT_COLORS`);
+  long labels truncate on the axis with the full name in the tooltip; the whole section hides if there's
+  no such data.
+
+Verified: build clean; `dashboard.js` `node --check` clean; a scan backfilled all 106 sessions
+(`--sql` shows agents e.g. Explore 52 / general-purpose 41, skills brainstorming 36, MCP Claude_Preview
+65 / Atlassian 31, hooks SessionStart:startup 96); a `PrintWindow` screenshot of the dashboard confirms
+all four charts render correctly with truncated labels and per-category colours. (Screenshot mechanics
+note: on this mixed-DPI multi-monitor setup, `PrintWindow` with `PW_RENDERFULLCONTENT` is the reliable
+way to capture the Photino window — `CopyFromScreen` at `GetWindowRect` coords caught the wallpaper when
+the window wasn't foreground.)
+
 ## 2026-07-21: Sessions — new session **detail** page — branch `SESSION-DETAIL`
 
 Clicking a session on the Sessions list now navigates to a detail page (`#session/<id>`) modelled on the
