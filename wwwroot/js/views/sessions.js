@@ -84,7 +84,7 @@ window.Views.sessions = (function () {
     const rows = sessions.map(s => `
       <tr>
         <td>
-          <div>${App.esc(s.title || '(untitled session)')}</div>
+          <a class="session-link" href="#session/${App.esc(s.id)}" title="View session detail">${App.esc(s.title || '(untitled session)')}</a>
           <div class="muted" style="font-size:11.5px">${App.esc(projectName(s.projectDir))}
             ${s.reviewState === 'pending' ? '<span class="badge pending">needs review</span>' : ''}</div>
         </td>

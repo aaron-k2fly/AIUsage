@@ -1,6 +1,68 @@
 # PROGRESS — AI Usage Tracker
 
-_Last updated: 2026-07-18_
+_Last updated: 2026-07-21_
+
+## 2026-07-21: Sessions — new session **detail** page — branch `SESSION-DETAIL`
+
+Clicking a session on the Sessions list now navigates to a detail page (`#session/<id>`) modelled on the
+reference mockup, with a **← Back** link (`history.back()`, falling back to `#sessions`).
+
+**Routing.** `app.js`'s `navigate()` now splits the hash at the first `/` — `#session/<id>` → route
+`session`, `param = <id>` — and passes `param` to `view.render(container, param)` (existing views ignore
+the extra arg). The `session` route keeps the "Sessions" sidebar item highlighted.
+
+**Backend.** New action `sessions.detail {sessionId}` (`SessionHandlers`): loads the stored row via new
+`SessionRepo.Get(conn, id)` (row + ticket links + explicit category name), then does an **on-demand deep
+re-parse** of that one transcript via new `SessionAggregator.ReadDetail(file, sessionId)` — same
+single-file pattern as `ReadLive`/`SubagentTokens`, no schema change. `ReadDetail` → `SessionDetail`
+gives exact per-tool counts (`ToolCounts`, full names incl. `mcp__…`), per-model token usage
+(`Models`→`ModelUsage`), reply/prompt/tool-call counts, and an **Agent/Active/Idle time split**: each
+inter-event gap is classified — before a human prompt = Active, before an assistant reply or tool-result
+= Agent, any gap **>5 min** = Idle — and the three partition (ended−started) exactly. The handler folds
+in `SubagentTokens`, derives the category (link category else edit-vs-read guess, matching the
+dashboard), and falls back to stored counters if the transcript file is gone (`transcriptAvailable:false`).
+
+**Frontend.** New `wwwroot/js/views/session.js` renders a 2-column card layout: **Overview** (started/
+ended, time split, primary model, category, review, total tokens with in/out/cache split + a
+"+ sub-agents" note, prompt/reply/tool-call counts), **Tools** (one coloured segment per tool + a
+name×count list), **Models** (per-model output bar), **Tickets** (reuses `Views.sessions`
+confirm/unlink/assign), **Token cost**. Cost is derived **in the view** from a model-family `$/Mtok`
+rate table (opus/sonnet/haiku) → est. cost, cache-hit % (`cacheRead/(cacheRead+cacheCreation)`), output
+share, and cache-read/write·output·input breakdown bars, with a rates footnote for the primary model.
+CSS added under "Session detail page" in `app.css`; the 2-column `.detail-grid` uses
+`repeat(2, minmax(0,1fr))` + `min-width:0` panels and stacks below 820px.
+
+Also: `#content` got `min-width: 0` (defensive against the flexbox min-content overflow trap) and a new
+`--detailtest <sessionId>` CLI verb prints the deep re-parse headlessly.
+
+Verified: `dotnet build` clean; `node --check` on the three touched JS files clean; `--detailtest` on
+several sessions (opus + sonnet, linked + unlinked) shows correct per-tool/per-model/timing/cost;
+DPI-aware window screenshots of two sessions confirm the layout matches the mockup (cost math checks out
+— e.g. opus session out 1.9M × $75/Mtok ≈ $145). **Note the earlier "right column clipped" scare was a
+DPI-unaware screenshot artifact (PowerShell captured only part of a 300%-scaled window), not a layout
+bug — the 2-column grid never overflowed.** Not committed — left on branch `SESSION-DETAIL` for the user.
+
+### Follow-up (same branch): **Agents & extensions** panel + Tickets moved last
+
+Added a fifth card, **Agents & extensions**, with four labelled chip groups showing *which*
+sub-agents / MCP tools / skills / hooks a session used (empty groups show "—"; all-empty shows a note).
+All recovered from the transcript in `ReadDetail` (no schema change):
+- **Agents** ← `Agent`/`Task` tool_use `input.subagent_type`.
+- **Skills** ← `Skill` tool_use `input.skill`.
+- **Hooks** ← `type:"attachment"` lines with `attachment.type` `hook_success`/`hook_error`, keyed by
+  `attachment.hookName` (e.g. `SessionStart:startup`; fallback `hookEvent`).
+- **MCP tools** ← the `mcp__server__tool` entries already in `ToolCounts`, grouped by server in the
+  handler (`mcps` list). Note remote/claude.ai MCP servers show as a UUID server name (that's the real
+  name in the transcript — no reliable UUID→friendly map).
+
+`SessionDetail` gained `Agents`/`Skills`/`Hooks` dicts; `sessions.detail` now also returns
+`agents`/`skills`/`hooks`/`mcps`; `--detailtest` prints them. Per the user's request the **Tickets**
+panel (least info) moved to **last**, so the grid is now Overview | Tools/Models · Agents&extensions |
+Token cost · Tickets.
+
+Verified: build clean; `session.js` `node --check` clean; `--detailtest` on a session using all four
+(agents `Explore ×3`, MCP atlassian+registry, skills, `SessionStart` hooks) shows correct extraction;
+DPI-aware screenshot confirms the panel + reordering render cleanly.
 
 ## 2026-07-18: Live Code — session Tokens = dashboard formula + separate Cache field — branch `live-code-enhancement`
 

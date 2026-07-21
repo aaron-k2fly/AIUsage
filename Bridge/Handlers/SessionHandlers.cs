@@ -38,6 +38,107 @@ public static partial class SessionHandlers
             return Task.FromResult<object?>(SessionRepo.List(conn, filter));
         });
 
+        router.Register("sessions.detail", payload =>
+        {
+            var sessionId = GetString(payload, "sessionId")
+                ?? throw new ArgumentException("sessionId is required");
+            using var conn = Db.Open();
+            var row = SessionRepo.Get(conn, sessionId)
+                ?? throw new ArgumentException($"Session '{sessionId}' not found");
+
+            static long L(object? o) => o is null ? 0 : Convert.ToInt64(o);
+            var filePath = row.GetValueOrDefault("filePath") as string;
+
+            SessionAggregator.SessionDetail? d = null;
+            SessionAggregator.SubagentUsage sub = default;
+            if (!string.IsNullOrEmpty(filePath) && File.Exists(filePath))
+            {
+                d = SessionAggregator.ReadDetail(filePath, sessionId);
+                sub = SessionAggregator.SubagentTokens(filePath);
+            }
+
+            // Category matches the dashboard's derivation: an explicit link category if set, else a
+            // guess from the edit/read balance (see StatsHandlers.ActivityUnion).
+            var editN = L(row.GetValueOrDefault("editCount")) + L(row.GetValueOrDefault("writeCount"));
+            var readN = L(row.GetValueOrDefault("readCount"));
+            var category = row.GetValueOrDefault("categoryName") as string
+                           ?? (editN >= readN ? "Generated code" : "Investigated");
+
+            // Prefer the deep re-parse; fall back to stored counters if the transcript is gone.
+            var tools = d is null
+                ? null
+                : d.ToolCounts.OrderByDescending(kv => kv.Value).ThenBy(kv => kv.Key)
+                    .Select(kv => new { name = kv.Key, count = kv.Value }).ToList();
+            var models = d is null
+                ? null
+                : d.Models.OrderByDescending(kv => kv.Value.Output).ThenByDescending(kv => kv.Value.Input)
+                    .Select(kv => new
+                    {
+                        model = kv.Key,
+                        input = kv.Value.Input,
+                        output = kv.Value.Output,
+                        cacheCreation = kv.Value.CacheCreation,
+                        cacheRead = kv.Value.CacheRead
+                    }).ToList();
+
+            // name/count lists for the "Agents & extensions" panel.
+            static List<object> ByCountDesc(Dictionary<string, int> src) =>
+                src.OrderByDescending(kv => kv.Value).ThenBy(kv => kv.Key)
+                    .Select(kv => (object)new { name = kv.Key, count = kv.Value }).ToList();
+
+            var agents = d is null ? null : ByCountDesc(d.Agents);
+            var skills = d is null ? null : ByCountDesc(d.Skills);
+            var hooks = d is null ? null : ByCountDesc(d.Hooks);
+            // MCP tools are just tool_use names prefixed "mcp__<server>__<tool>" — group by server.
+            var mcps = d is null ? null : d.ToolCounts
+                .Where(kv => kv.Key.StartsWith("mcp__", StringComparison.Ordinal))
+                .Select(kv =>
+                {
+                    var parts = kv.Key["mcp__".Length..].Split("__", 2);
+                    return new { server = parts[0], tool = parts.Length > 1 ? parts[1] : "", count = kv.Value };
+                })
+                .OrderByDescending(x => x.count).ThenBy(x => x.server)
+                .Select(x => (object)x).ToList();
+
+            return Task.FromResult<object?>(new
+            {
+                id = sessionId,
+                title = row.GetValueOrDefault("title"),
+                projectDir = row.GetValueOrDefault("projectDir"),
+                gitBranch = row.GetValueOrDefault("gitBranch"),
+                model = row.GetValueOrDefault("model"),
+                startedAt = row.GetValueOrDefault("startedAt"),
+                endedAt = row.GetValueOrDefault("endedAt"),
+                reviewState = row.GetValueOrDefault("reviewState"),
+                ccVersion = row.GetValueOrDefault("ccVersion"),
+                category,
+                links = row.GetValueOrDefault("links"),
+
+                // Token totals: deep re-parse when available, else stored counters.
+                inputTokens = d?.InputTokens ?? L(row.GetValueOrDefault("inputTokens")),
+                outputTokens = d?.OutputTokens ?? L(row.GetValueOrDefault("outputTokens")),
+                cacheCreationTokens = d?.CacheCreationTokens ?? L(row.GetValueOrDefault("cacheCreationTokens")),
+                cacheReadTokens = d?.CacheReadTokens ?? L(row.GetValueOrDefault("cacheReadTokens")),
+
+                promptCount = d?.PromptCount ?? (int)L(row.GetValueOrDefault("userMessageCount")),
+                replyCount = d?.ReplyCount ?? 0,
+                toolCallCount = d?.ToolCallCount ?? 0,
+
+                agentMs = d?.AgentMs ?? 0,
+                activeMs = d?.ActiveMs ?? 0,
+                idleMs = d?.IdleMs ?? 0,
+
+                tools,
+                models,
+                agents,
+                skills,
+                hooks,
+                mcps,
+                subagentTokens = new { inOut = sub.InOut, cacheCreation = sub.CacheCreation, cacheRead = sub.CacheRead },
+                transcriptAvailable = d is not null
+            });
+        });
+
         router.Register("sessions.assignTicket", payload =>
         {
             var (sessionId, ticketKey) = RequireSessionAndKey(payload);
