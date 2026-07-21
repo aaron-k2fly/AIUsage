@@ -28,6 +28,11 @@ public static class LiveCodeHandlers
     private static readonly HashSet<string> ExcludedTicketStatuses =
         new(StringComparer.OrdinalIgnoreCase) { "Closed", "Done", "Ready for Release" };
 
+    /// <summary>How many assigned tickets the Live Code picker lists (setting
+    /// <c>livecode_ticket_count</c>; default 3, clamped 1..20).</summary>
+    private static int TicketCount() =>
+        int.TryParse(SettingsStore.Get("livecode_ticket_count"), out var n) ? Math.Clamp(n, 1, 20) : 3;
+
     /// <summary>One <see cref="ConPtySession"/> per tab plus the metadata needed to locate its
     /// transcript and to Resume it after Stop. Mutated only under <see cref="Gate"/> because the
     /// ConPTY output/exit callbacks fire on the PTY read thread while handlers run on bridge pool
@@ -66,6 +71,7 @@ public static class LiveCodeHandlers
             return Task.FromResult<object?>(new
             {
                 jiraConfigured = JiraClient.FromSettings() is not null,
+                ticketCount = TicketCount(),
                 lastFolder = SettingsStore.Get("livecode_last_folder") ?? "",
                 lastShell = SettingsStore.Get("livecode_last_shell") ?? "powershell",
                 lastModel = SettingsStore.Get("livecode_last_model") ?? "",
@@ -100,12 +106,15 @@ public static class LiveCodeHandlers
             if (client is null)
                 return new { configured = false, tickets = Array.Empty<object>() };
 
-            // Fetch a larger page (newest first) then drop finished tickets by status name and take 3.
-            // Filtering client-side (vs JQL) avoids errors if a status name doesn't exist in this instance.
-            var page = await client.SearchIssuesAsync(AssignedJql, nextPageToken: null, maxResults: 25);
+            // Fetch a larger page (newest first) then drop finished tickets by status name and take the
+            // configured count. Filtering client-side (vs JQL) avoids errors if a status name doesn't
+            // exist in this instance; the page is oversized so filtering still leaves enough to take.
+            var count = TicketCount();
+            var page = await client.SearchIssuesAsync(AssignedJql, nextPageToken: null,
+                maxResults: Math.Clamp(count * 3, 25, 60));
             var tickets = page.Issues
                 .Where(i => i.Status is null || !ExcludedTicketStatuses.Contains(i.Status.Trim()))
-                .Take(3)
+                .Take(count)
                 .Select(i => new
                 {
                     key = i.Key,
@@ -348,6 +357,23 @@ public static class LiveCodeHandlers
             return Task.FromResult<object?>(new { activeSessions = list });
         });
 
+        // Rolling usage-limit bars (session 5h + week 7d) from Anthropic's oauth/usage endpoint —
+        // server-computed percentages, cached 5 min in ClaudeUsage so polling is cheap. Best-effort:
+        // returns available:false when signed out / offline so the page just hides the bars.
+        router.Register("livecode.usage", async _ =>
+        {
+            var u = await ClaudeUsage.ReadAsync();
+            if (u is null || !u.HasAny) return new { available = false };
+            return new
+            {
+                available = true,
+                sessionPct = u.SessionPct,
+                sessionResetsAt = u.SessionResetsAt?.ToString("o"),
+                weekPct = u.WeekPct,
+                weekResetsAt = u.WeekResetsAt?.ToString("o")
+            };
+        });
+
         // Usage metrics for a specific tab's readout. Tokens come from the transcript DB (a light
         // incremental scan picks up the live session's new lines); context % is read live from the
         // tab's transcript. weekTokens + activeSessions are global (shared bottom panel).
@@ -365,7 +391,8 @@ public static class LiveCodeHandlers
             LiveSession? entry;
             lock (Gate) Tabs.TryGetValue(tabId, out entry);
 
-            long sessionTokens = 0, contextTokens = 0;
+            long mainTokens = 0, agentTokens = 0, contextTokens = 0;
+            long cacheCreation = 0, cacheRead = 0;
             // Prefer the selected model for the window size (per the UI); fall back to the actual
             // model recorded in the transcript (covers the "Default" selection).
             string? sizeModel = entry?.ActiveModel;
@@ -376,11 +403,29 @@ public static class LiveCodeHandlers
                 contextTokens = ctx;
                 if (string.IsNullOrEmpty(sizeModel)) sizeModel = transcriptModel;
                 using var conn = Db.Open();
+                // "Tokens" is input + output — the SAME formula as the dashboard/weekly figures, so the
+                // two stay consistent. Cache is reported SEPARATELY (created + read) as its own field so
+                // the readout can show "Tokens … · cache …" without inflating the headline number.
                 var rows = Rows.Query(conn,
-                    "SELECT COALESCE(input_tokens + output_tokens, 0) AS t FROM Sessions WHERE file_path = $f",
+                    "SELECT COALESCE(input_tokens + output_tokens, 0) AS t, " +
+                    "       COALESCE(cache_creation_tokens, 0) AS cc, COALESCE(cache_read_tokens, 0) AS cr " +
+                    "FROM Sessions WHERE file_path = $f",
                     ("$f", file));
-                if (rows.Count > 0) sessionTokens = Convert.ToInt64(rows[0]["t"] ?? 0L);
+                if (rows.Count > 0)
+                {
+                    mainTokens = Convert.ToInt64(rows[0]["t"] ?? 0L);
+                    cacheCreation = Convert.ToInt64(rows[0]["cc"] ?? 0L);
+                    cacheRead = Convert.ToInt64(rows[0]["cr"] ?? 0L);
+                }
+                // Sub-agents (Task tool) write to <sessionId>/subagents/*.jsonl with the parent's
+                // sessionId — the scanner skips them, so add their usage here for the true session total.
+                var agent = SessionAggregator.SubagentTokens(file);
+                agentTokens = agent.InOut;
+                cacheCreation += agent.CacheCreation;
+                cacheRead += agent.CacheRead;
             }
+            var sessionTokens = mainTokens + agentTokens;   // in+out, dashboard-consistent, incl. agents
+            var cacheTokens = cacheCreation + cacheRead;     // shown separately as "cache …"
 
             var contextSize = ContextSizeFor(sizeModel);
             var activeSessions = ActiveSessions.Top(5, TimeSpan.FromMinutes(5))
@@ -389,6 +434,11 @@ public static class LiveCodeHandlers
             {
                 weekTokens,
                 sessionTokens,
+                mainTokens,
+                agentTokens,
+                cacheTokens,
+                cacheCreation,
+                cacheRead,
                 contextTokens,
                 contextSize,
                 contextPct = contextSize > 0 ? (int)Math.Round(100.0 * contextTokens / contextSize) : 0,
@@ -628,7 +678,7 @@ public static class LiveCodeHandlers
         // When an agent is chosen, tell Claude to USE that agent on the ticket (it invokes the
         // matching subagent from .claude/agents); otherwise work the ticket directly.
         var prompt = string.IsNullOrWhiteSpace(agentName)
-            ? $"Work on {ticket}."
+            ? $"Work on {ticket}. Make sure to understand the ticket first, and ask questions if anything is unclear. And then before implementing, make sure to create a plan document and confirm first."
             : $"Use the {agentName} agent to work on {ticket}.";
         if (!string.IsNullOrWhiteSpace(description))
             prompt += " " + description.Trim();

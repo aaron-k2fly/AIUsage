@@ -1,6 +1,147 @@
 # PROGRESS — AI Usage Tracker
 
-_Last updated: 2026-07-16_
+_Last updated: 2026-07-18_
+
+## 2026-07-18: Live Code — session Tokens = dashboard formula + separate Cache field — branch `live-code-enhancement`
+
+The session "Tokens" readout looked "too much": it used `input + output + cache_creation` while the
+**dashboard** (tokens this month/week, top tickets, `weekTokens`) uses `input + output` only (all cache
+excluded, per StatsHandlers). So the session number was ~5–25× the dashboard for the same work (e.g.
+"Injury Summary CSV": dashboard 3,636 vs session 95,768).
+
+**Resolution (user decision after review):** make session Tokens use the **same formula as the
+dashboard** (`input + output`, sub-agents still included), and show **cache as a separate field**:
+- `livecode.metrics` now returns `sessionTokens = mainTokens + agentTokens` where both are `input +
+  output` (dashboard-consistent), plus `cacheTokens` (`cache_creation + cache_read`, incl. sub-agents)
+  and its `cacheCreation`/`cacheRead` split.
+- `SessionAggregator.SubagentTokens` now returns `SubagentUsage{InOut, CacheCreation, CacheRead}`
+  (was a single cache-inclusive long) so the handler can split Tokens vs Cache for sub-agents too.
+- UI (`livecode.js`): the "This session" strip is now `Tokens X · Cache Y · Context Z`. Tokens keeps the
+  "incl. N agents" suffix + Main/agents tooltip; Cache has a "created … · read …" tooltip (read is
+  re-counted each turn, so it's usually the bulk).
+
+Now the session Tokens equals the dashboard figure for the same session (main part) and cache is
+transparent but never inflates the headline. **Dashboard token method (answer to the other question):**
+`SUM(input_tokens + output_tokens)` — excludes ALL cache (creation + read).
+
+Verified: `dotnet build` clean; `livecode.js` `node --check` clean; DB spot-check confirmed session
+Tokens(main) == dashboard `input+output` per session and cache = created+read shown separately.
+
+## 2026-07-18: Live Code — session/week usage-limit progress bars — branch `live-code-enhancement`
+
+Added two rolling usage-limit bars (SESSION = 5-hour window, WEEK = 7-day window) to the empty space in
+the Live Code bottom panel, beside **Plan** and **Tokens — this week**, above Active sessions — ported
+from the CommandCenter project's implementation.
+
+**Data source** (the crux): Anthropic's `https://api.anthropic.com/api/oauth/usage` endpoint — the same
+data Claude Code's `/usage` shows. Authed with the OAuth access token from
+`~/.claude/.credentials.json` (`claudeAiOauth.accessToken`) + header `anthropic-beta: oauth-2025-04-20`.
+The response's `five_hour.utilization`/`resets_at` → SESSION bar, `seven_day.*` → WEEK bar. Percentages
+are **server-computed** (0–100) — no local quota table / plan-specific math (the server knows the plan
+from the token).
+
+**Backend** — new `Platform/ClaudeUsage.cs`:
+- `ReadAsync()` → `ClaudeUsageInfo { SessionPct, SessionResetsAt, WeekPct, WeekResetsAt }`. Reads the
+  token (skips if `expiresAt` passed), GETs the endpoint, parses the two windows.
+- Token is used only to sign the request — never stored, logged, or returned. Consistent with
+  `ClaudeAccount` reading `~/.claude.json` for the plan.
+- Cached 5 min (SemaphoreSlim-guarded so concurrent pollers share one fetch); best-effort — any failure
+  (no token / expired / offline / non-2xx) returns the last-good value or null.
+- New bridge action `livecode.usage` → `{available, sessionPct, sessionResetsAt, weekPct, weekResetsAt}`;
+  `available:false` when signed out/offline so the page hides the bars.
+
+**Frontend** (`wwwroot/js/views/livecode.js` + `app.css`):
+- `#lc-usage` block added to the `.lc-metrics` flex row (fills the space beside Plan/Tokens).
+- `usageRow(label, pct, resetsAt)` — clamp 0–100, threshold class (`≥95% crit` red / `≥80% warn`
+  amber / else accent), `N% · resets …` suffix. `fmtReset()` shows just the time if the reset is today,
+  else `Fri 07:00 am`.
+- `pollUsage()` on init + every 60s (`G.usageTimer`, cleared in `teardownPage`); backend 5-min cache
+  means the API is hit at most once per 5 min regardless of poll rate.
+- CSS `.lc-usage`/`.lc-usage-row`/`.lc-bar-track`/`.lc-bar-fill(.warn/.crit)` in the app's light-theme
+  palette (`--accent`/`--warn`/`--danger`, `--accent-soft` track).
+
+**Verified**: `dotnet build` clean; `ClaudeUsage.Parse` unit-checked against the known endpoint shape
+(session 25% / week 4% / reset times parsed; empty JSON → `HasAny=false` → bars hidden); `livecode.js`
+`node --check` clean; headless-Edge render (real `app.css`) confirmed the bars fill the space beside
+Plan/Tokens above Active sessions, with correct normal/warn/crit colouring and reset formatting.
+**Not verified**: the live API call — this sandbox has no outbound network (curl → HTTP 000 even with the
+sandbox off; a proxy blocks it), but the real Photino app reaches the endpoint just as Claude Code does.
+Worth a manual GUI confirmation that real numbers appear.
+
+## 2026-07-18: Live Code — Re-fetch tickets button + configurable ticket count — branch `live-code-enhancement`
+
+Two related additions to the Live Code ticket picker:
+- **↻ Re-fetch button** beside the ticket list (`wwwroot/js/views/livecode.js`, header now
+  `.lc-tickets-head` flex row). Shown only when JIRA is configured; wired in `wireTabPanel`; the new
+  `refetchTickets()` shows a busy state and re-calls `loadTickets()` (which hits `livecode.tickets`,
+  always a live JIRA fetch — no cache). CSS `.lc-tickets-head`/`.lc-refetch` in `app.css`.
+- **Configurable ticket count** — new setting `livecode_ticket_count` (default 3, clamped 1–20):
+  - `Settings → Live Code` panel with a number input (`wwwroot/js/views/settings.js`); saved via
+    `settings.set` (`livecodeTicketCount`, parsed + clamped 1–20) and read back by `settings.get`.
+  - `LiveCodeHandlers.TicketCount()` reads/clamps the setting; `livecode.tickets` uses it for `.Take(n)`
+    and oversizes the JIRA page (`maxResults = clamp(n*3, 25, 60)`) so status-filtering still leaves
+    enough; `livecode.config` returns `ticketCount` so the picker label ("latest N assigned to you")
+    reflects it.
+
+Verified: `dotnet build` clean; settings round-trip via `--set`/`--sql` (key `livecode_ticket_count`
+consistent across all four call sites); both JS files `node --check` clean; and a headless-Edge render
+(same engine as WebView2) of the real `settings.js` + the Live Code ticket-header markup confirmed the
+new Settings panel and the right-aligned ↻ Re-fetch button with the dynamic "latest 5" label. The live
+in-app terminal/JIRA path still needs a manual GUI check (interactive login).
+
+## 2026-07-18: Live Code — terminal sizing (taller container, no spurious scrollbars) — branch `live-code-enhancement`
+
+Tweaked the terminal panel so the common case shows neither scrollbar (`wwwroot/css/app.css`,
+`.lc-terminal`):
+- **Taller container:** `height 42vh → 60vh`, `min-height 320px → 440px`, so more rows fit and the
+  initial view (welcome + prompt) doesn't need vertical scroll.
+- **No horizontal scrollbar:** host `overflow: auto → hidden`. The bar came from sub-pixel width
+  rounding of the xterm canvas — xterm wraps to its own column count and never needs the host to
+  scroll horizontally, so hiding host overflow removes it without clipping real content.
+- **Vertical scrollbar only when needed:** xterm's vendored css forces `.xterm-viewport
+  { overflow-y: scroll }` (always-visible bar). Overrode it with `overflow-y: auto` +
+  `scrollbar-gutter: stable`. The stable gutter permanently reserves the 12px column — so FitAddon's
+  column count stays consistent and the last chars never tuck under the bar (the reason the old code
+  forced an always-on bar) — while the scrollbar itself only appears once there's real scrollback.
+  This also renders the terminal slightly narrower (the reserved gutter).
+
+Verified in headless Edge (same Chromium engine as WebView2) with the real vendored xterm + these CSS
+rules: short content → no vertical + no horizontal scrollbar (full-width line fits); 200 lines →
+vertical scrollbar appears, still no horizontal. Note: the live in-app terminal with real Claude
+output needs an interactive login to exercise fully, so that path is left to manual GUI check.
+
+## 2026-07-18: Live Code — session Tokens counter = distinct tokens processed, incl. sub-agents — branch `live-code-enhancement`
+
+**Problem.** The per-tab "This session → Tokens" readout only counted the main agent. When a
+session spawns sub-agents (the Task tool — e.g. `safety-developer` spawning `safety-plan-critic`),
+their token usage was invisible, so the counter under-reported the true session cost.
+
+**Why they were missed.** Claude Code writes each sub-agent to
+`~/.claude/projects/<encoded-cwd>/<sessionId>/subagents/agent-*.jsonl`. Those lines carry the
+**parent's** `sessionId` and are marked `isSidechain:true`, so (a) the scanner skips them
+(`SessionAggregator.ParseLine` returns on `isSidechain`, and the session-named subdirs are skipped),
+and (b) the metrics query (`WHERE file_path = <main transcript>`) never sees them.
+
+**Fix (display-only, live readout).**
+- `SessionAggregator.SubagentTokens(mainTranscriptPath)` — sums **processed** tokens (input + output +
+  cache-creation; cache-read excluded) across every `agent-*.jsonl` found recursively under
+  `<sessionId>/`, so nested sub-agents count too. Best-effort (IO/parse errors → partial sum).
+- `livecode.metrics` now returns `mainTokens` + `agentTokens`; `sessionTokens = mainTokens + agentTokens`.
+  The **main** query uses the same formula (`input + output + cache_creation_tokens`).
+- Frontend shows the total with an "incl. N agents" muted suffix + a "Main X + agents Y" tooltip when
+  `agentTokens > 0` (`wwwroot/js/views/livecode.js`).
+- **Metric choice — "distinct tokens processed" (user decision 2026-07-18, after testing):** the first
+  cut counted only input+output (dashboard headline convention), which under-reported so badly it looked
+  broken — a codebase-reading sub-agent showed ~2k while actually processing hundreds of thousands of
+  tokens. A middle iteration used the full billed total (all four types incl. cache-read), but cache-read
+  re-counts the same cached prefix every turn and inflated the number. Final: **input + output +
+  cache-creation** (cache-read excluded) — reflects real distinct content processed without the per-turn
+  re-read inflation.
+- **Scope:** the DB, dashboard, and `weekTokens` still exclude *all* cache *and* sub-agents (v1 design is
+  unchanged) — only the Live Code session readout keeps cache-creation and re-adds sub-agents.
+
+Verified against a real running session (SFTY-1634, one background sub-agent): main ≈ 96k + agent ≈ 86k =
+≈ 182k. `dotnet build` clean.
 
 ## 2026-07-16: Live Code — agent/custom-agent lock + Resume Sessions picker — branch `LIVE-CODE-SESSION`
 

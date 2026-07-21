@@ -208,6 +208,74 @@ public sealed class SessionAggregator(TicketKeyInferrer inferrer)
         return (info.ContextTokens, info.Model);
     }
 
+    /// <summary>Token usage a session's sub-agents consumed, split into the headline in+out figure
+    /// (<see cref="InOut"/>, matches the dashboard formula) and the cache portion
+    /// (<see cref="CacheCreation"/> + <see cref="CacheRead"/>), so the Live Code readout can show
+    /// "Tokens … · cache …". <see cref="Cache"/> is the sum of both cache fields.</summary>
+    public readonly record struct SubagentUsage(long InOut, long CacheCreation, long CacheRead)
+    {
+        public long Cache => CacheCreation + CacheRead;
+    }
+
+    /// <summary>Sum sub-agent usage for a session. Claude Code writes each sub-agent to
+    /// ~/.claude/projects/&lt;encoded-cwd&gt;/&lt;session-id&gt;/subagents/agent-*.jsonl (sidechain turns that
+    /// carry the parent's sessionId, so the scanner and the main-file token query both exclude them).
+    /// Given the main transcript path &lt;dir&gt;/&lt;session-id&gt;.jsonl, this sums every agent-*.jsonl found
+    /// anywhere under &lt;dir&gt;/&lt;session-id&gt;/ (recursive, so nested sub-agents are counted too). Returns
+    /// zeroes if the session has no sub-agent dir. Best-effort: unreadable files/lines are skipped.</summary>
+    public static SubagentUsage SubagentTokens(string mainTranscriptPath)
+    {
+        var dir = Path.GetDirectoryName(mainTranscriptPath);
+        var id = Path.GetFileNameWithoutExtension(mainTranscriptPath);
+        if (string.IsNullOrEmpty(dir) || string.IsNullOrEmpty(id)) return default;
+        var sessionDir = Path.Combine(dir, id);
+        if (!Directory.Exists(sessionDir)) return default;
+
+        IEnumerable<string> files;
+        try { files = Directory.EnumerateFiles(sessionDir, "agent-*.jsonl", SearchOption.AllDirectories); }
+        catch (IOException) { return default; }
+        catch (UnauthorizedAccessException) { return default; }
+
+        long inOut = 0, cc = 0, cr = 0;
+        foreach (var file in files)
+        {
+            var u = SumUsage(file);
+            inOut += u.InOut; cc += u.CacheCreation; cr += u.CacheRead;
+        }
+        return new SubagentUsage(inOut, cc, cr);
+    }
+
+    /// <summary>Sum a transcript's assistant-turn usage, split into in+out and the two cache fields.
+    /// Best-effort — IO/parse errors yield a partial sum.</summary>
+    private static SubagentUsage SumUsage(string filePath)
+    {
+        long inOut = 0, cc = 0, cr = 0;
+        try
+        {
+            foreach (var line in File.ReadLines(filePath))
+            {
+                if (string.IsNullOrWhiteSpace(line)) continue;
+                try
+                {
+                    using var doc = JsonDocument.Parse(line);
+                    var root = doc.RootElement;
+                    if (root.ValueKind != JsonValueKind.Object) continue;
+                    if (!TryGetString(root, "type", out var type) || type != "assistant") continue;
+                    if (!root.TryGetProperty("message", out var msg) || msg.ValueKind != JsonValueKind.Object) continue;
+                    if (msg.TryGetProperty("usage", out var usage) && usage.ValueKind == JsonValueKind.Object)
+                    {
+                        inOut += GetLong(usage, "input_tokens") + GetLong(usage, "output_tokens");
+                        cc += GetLong(usage, "cache_creation_input_tokens");
+                        cr += GetLong(usage, "cache_read_input_tokens");
+                    }
+                }
+                catch (JsonException) { /* skip truncated/partial line */ }
+            }
+        }
+        catch (IOException) { /* file busy — return partial */ }
+        return new SubagentUsage(inOut, cc, cr);
+    }
+
     /// <summary>The first real user prompt in a transcript (string message.content — array content is
     /// tool-result noise), collapsed to one line and trimmed to <paramref name="maxLen"/> chars. Null
     /// if none/unreadable. Used to label sessions in the Resume Sessions picker.</summary>

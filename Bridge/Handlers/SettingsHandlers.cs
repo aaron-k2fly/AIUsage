@@ -19,7 +19,8 @@ public static class SettingsHandlers
             defaultScanPath = SettingsStore.ScanRoots()[0],
             projectKeyAllowlist = SettingsStore.Get("project_key_allowlist") ?? "",
             backfillFrom = SettingsStore.Get("backfill_from") ?? "",
-            jiraFetchJql = SettingsStore.Get("jira_fetch_jql") ?? JiraHandlers.DefaultFetchJql
+            jiraFetchJql = SettingsStore.Get("jira_fetch_jql") ?? JiraHandlers.DefaultFetchJql,
+            livecodeTicketCount = SettingsStore.Get("livecode_ticket_count") ?? "3"
         }));
 
         router.Register("settings.set", payload =>
@@ -29,6 +30,11 @@ public static class SettingsHandlers
             SetIfPresent(payload, "scanPaths", "scan_paths");
             SetIfPresent(payload, "backfillFrom", "backfill_from");
             SetIfPresent(payload, "jiraFetchJql", "jira_fetch_jql");
+
+            // Live Code ticket count: store a clamped integer (1..20) so the picker/config stay sane.
+            var count = SessionHandlers.GetString(payload, "livecodeTicketCount");
+            if (count is not null && int.TryParse(count.Trim(), out var n))
+                SettingsStore.Set("livecode_ticket_count", Math.Clamp(n, 1, 20).ToString());
 
             // token is write-only: only overwrite when a new non-empty value arrives
             var token = SessionHandlers.GetString(payload, "jiraToken");

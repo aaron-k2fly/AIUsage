@@ -184,6 +184,9 @@ label { display: block; font-size: 12.5px; color: var(--muted); margin: 12px 0 4
 
 /* --- Live Code page --- */
 .lc-section-head { font-size: 13px; font-weight: 600; margin-bottom: 10px; }
+.lc-tickets-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.lc-refetch { font-size: 12px; padding: 3px 10px; font-weight: 500; white-space: nowrap; }
+.lc-refetch:disabled { opacity: 0.6; cursor: default; }
 .lc-ticket-list { display: flex; flex-direction: column; gap: 8px; }
 .lc-ticket {
   display: flex; align-items: center; gap: 10px; text-align: left; width: 100%;
@@ -204,10 +207,13 @@ label { display: block; font-size: 12.5px; color: var(--muted); margin: 12px 0 4
 
 .lc-terminal-wrap { padding: 0; overflow: hidden; }
 .lc-terminal {
-  min-height: 320px; height: 42vh;
+  min-height: 440px; height: 60vh;
   background: #1e1e1e; color: #d4d4d4;
   font-family: "Cascadia Mono", "Consolas", monospace; font-size: 13px;
-  padding: 12px; overflow: auto;
+  /* overflow hidden: xterm wraps to its own column count and manages vertical scrollback in
+     .xterm-viewport, so the host itself never needs a scrollbar. Letting the host scroll (auto)
+     produced a spurious horizontal scrollbar from sub-pixel width rounding of the xterm canvas. */
+  padding: 12px; overflow: hidden;
 }
 .lc-terminal.empty {
   display: flex; align-items: center; justify-content: center;
@@ -216,7 +222,12 @@ label { display: block; font-size: 12.5px; color: var(--muted); margin: 12px 0 4
 /* Force a real (non-overlay) scrollbar in the terminal viewport. WebView2 defaults to an
    overlay scrollbar with zero layout width, so xterm's FitAddon computes full-width columns
    and the last characters render underneath it. Giving the scrollbar real width makes FitAddon
-   reserve a column for it, ending the overlap. */
+   reserve a column for it, ending the overlap.
+   `scrollbar-gutter: stable` + `overflow-y: auto` (overriding xterm's default `overflow-y: scroll`):
+   the 12px gutter is ALWAYS reserved — so FitAddon's column count stays consistent and the last
+   characters never tuck under the bar — but the scrollbar itself only appears when there is real
+   scrollback to scroll, so short sessions show no vertical scrollbar. */
+.lc-terminal .xterm-viewport { overflow-y: auto; scrollbar-gutter: stable; }
 .lc-terminal .xterm-viewport::-webkit-scrollbar { width: 12px; }
 .lc-terminal .xterm-viewport::-webkit-scrollbar-track { background: #1e1e1e; }
 .lc-terminal .xterm-viewport::-webkit-scrollbar-thumb { background: #4a4a4a; border-radius: 6px; }
@@ -226,6 +237,17 @@ label { display: block; font-size: 12.5px; color: var(--muted); margin: 12px 0 4
 .lc-metric-label { color: var(--muted); font-size: 12.5px; }
 .lc-metric-val { font-size: 20px; font-weight: 650; margin-top: 2px; }
 .lc-metric-sub { color: var(--muted); font-size: 11.5px; margin-top: 3px; }
+/* Rolling usage-limit bars (session 5h + week 7d), filling the space beside Plan/Tokens. */
+.lc-usage { flex: 1 1 340px; min-width: 260px; display: flex; flex-direction: column; justify-content: center; gap: 9px; }
+.lc-usage:empty { display: none; }
+.lc-usage-row { display: flex; align-items: center; gap: 10px; }
+.lc-usage-label { flex: 0 0 auto; width: 58px; color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .06em; }
+.lc-bar-track { flex: 1 1 auto; height: 6px; border-radius: 4px; background: var(--accent-soft); overflow: hidden; }
+.lc-bar-fill { height: 100%; border-radius: 4px; background: var(--accent); transition: width .4s ease; }
+.lc-bar-fill.warn { background: var(--warn); }
+.lc-bar-fill.crit { background: var(--danger); }
+.lc-usage-pct { flex: 0 0 auto; min-width: 132px; text-align: right; color: var(--muted); font-size: 11.5px; white-space: nowrap; }
+
 .lc-active { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
 .lc-active-list { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 6px; font-size: 13px; }
 .lc-active-item { display: inline-flex; gap: 6px; align-items: baseline; }

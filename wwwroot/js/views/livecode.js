@@ -16,6 +16,7 @@ window.Views.livecode = (function () {
     ticketsLoaded: false,
     metricsTimer: null,
     activeTimer: null,
+    usageTimer: null,   // rolling session/week usage-limit bars (livecode.usage)
     outputSub: null,    // single pty.output subscription, routed by tabId
     exitSub: null
   };
@@ -123,8 +124,10 @@ window.Views.livecode = (function () {
 
     pollMetrics();
     pollActive();
+    pollUsage();
     G.metricsTimer = setInterval(pollMetrics, 4000); // active tab tokens/context (light DB scan)
     G.activeTimer = setInterval(pollActive, 2000);   // shared active-sessions list (cheap)
+    G.usageTimer = setInterval(pollUsage, 60000);    // session/week usage bars (backend cached 5 min)
     ensureHashCleanup();
     applyPendingFocus();
   }
@@ -135,6 +138,7 @@ window.Views.livecode = (function () {
     if (G.exitSub) { try { G.exitSub(); } catch {} G.exitSub = null; }
     if (G.metricsTimer) { clearInterval(G.metricsTimer); G.metricsTimer = null; }
     if (G.activeTimer) { clearInterval(G.activeTimer); G.activeTimer = null; }
+    if (G.usageTimer) { clearInterval(G.usageTimer); G.usageTimer = null; }
     tabs.forEach(disposeTabTerm);
   }
 
@@ -178,6 +182,7 @@ window.Views.livecode = (function () {
           <div class="lc-metric"><div class="lc-metric-label">Tokens — this week</div>
             <div class="lc-metric-val" id="lc-tok-week">—</div>
             <div class="lc-metric-sub">${G.cfg.usageResetsAt ? 'usage limits reset ' + App.esc(fmtResetDate(G.cfg.usageResetsAt)) : ''}</div></div>
+          <div class="lc-usage" id="lc-usage"></div>
         </div>
         <div class="lc-active">
           <div class="lc-metric-label">Active Claude Code sessions <span class="muted">(top 5, last 5 min)</span></div>
@@ -214,7 +219,10 @@ window.Views.livecode = (function () {
 
     host.innerHTML = `
       <div class="panel lc-tickets">
-        <div class="lc-section-head">Ticket to work on <span class="muted">(latest 3 assigned to you)</span></div>
+        <div class="lc-section-head lc-tickets-head">
+          <span>Ticket to work on <span class="muted">(latest ${G.cfg.ticketCount || 3} assigned to you)</span></span>
+          ${G.cfg.jiraConfigured ? `<button class="btn lc-refetch" id="lc-refetch-tickets" title="Re-fetch your assigned tickets from JIRA">↻ Re-fetch</button>` : ''}
+        </div>
         <div id="lc-ticket-list" class="lc-ticket-list"><span class="muted">Loading…</span></div>
       </div>
 
@@ -263,7 +271,8 @@ window.Views.livecode = (function () {
 
       <div class="panel lc-row lc-tab-metrics">
         <span class="lc-metric-label">This session</span>
-        <span>Tokens <b id="lc-tok-session">—</b></span>
+        <span>Tokens <b id="lc-tok-session">—</b><span id="lc-tok-agents" class="muted"></span></span>
+        <span>Cache <b id="lc-cache">—</b></span>
         <span>Context <b id="lc-ctx">—</b></span>
       </div>`;
 
@@ -283,6 +292,8 @@ window.Views.livecode = (function () {
     document.getElementById('lc-folder').addEventListener('change', () => { saveConfig(); loadAgents(); loadFolderSessions(t); });
     document.getElementById('lc-browse').addEventListener('click', browse);
     document.getElementById('lc-resume-sessions').addEventListener('click', () => openResumeSessions(t));
+    const refetchBtn = document.getElementById('lc-refetch-tickets');
+    if (refetchBtn) refetchBtn.addEventListener('click', refetchTickets);
 
     document.querySelectorAll('[data-shell]').forEach(b =>
       b.addEventListener('click', () => {
@@ -310,7 +321,18 @@ window.Views.livecode = (function () {
     });
     document.getElementById('lc-custom-agent').addEventListener('change', () => saveConfig());
     document.getElementById('lc-custom-agent-browse').addEventListener('click', browseCustomAgent);
-    document.getElementById('lc-auto').addEventListener('change', e => { t.autoApprove = e.target.checked; saveConfig(); });
+    document.getElementById('lc-auto').addEventListener('change', async e => {
+      if (!e.target.checked) { t.autoApprove = false; saveConfig(); return; }
+      const ok = await App.confirm(
+        'Auto-approve confirmations?\n\n' +
+        'Claude Code will try to automatically approve any prompts it raises during the session ' +
+        '(such as file edits) so it can keep working without waiting for you. Only use this in a ' +
+        'folder you trust.',
+        'Enable auto-approve');
+      t.autoApprove = ok;
+      e.target.checked = ok;
+      saveConfig();
+    });
     document.getElementById('lc-bypass').addEventListener('change', async e => {
       if (!e.target.checked) { t.bypass = false; return; }
       const ok = await App.confirm(
@@ -395,6 +417,17 @@ window.Views.livecode = (function () {
     }
     G.ticketsLoaded = true;
     renderTicketList();
+  }
+
+  // Manual re-fetch (↻ button beside the ticket list): pull the assigned tickets from JIRA again,
+  // showing a busy state on the button. livecode.tickets always hits JIRA live (no cache).
+  async function refetchTickets() {
+    const btn = document.getElementById('lc-refetch-tickets');
+    if (btn) { btn.disabled = true; btn.textContent = '↻ Fetching…'; }
+    G.ticketsLoaded = false;
+    renderTicketList();
+    await loadTickets();
+    if (btn) { btn.disabled = false; btn.textContent = '↻ Re-fetch'; }
   }
 
   function renderTicketList() {
@@ -616,7 +649,24 @@ window.Views.livecode = (function () {
       const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
       set('lc-tok-week', App.fmtNum(m.weekTokens));
       set('lc-tok-session', m.active ? App.fmtNum(m.sessionTokens) : '—');
+      // Cache reported separately (created + read) so "Tokens" stays consistent with the dashboard.
+      set('lc-cache', m.active ? App.fmtNum(m.cacheTokens) : '—');
       set('lc-ctx', m.active ? `${App.fmtNum(m.contextTokens)} of ${App.fmtNum(m.contextSize)} (${m.contextPct}%)` : '—');
+      // Show an "incl. agents" hint + tooltip breakdown when sub-agents contributed tokens.
+      const tokEl = document.getElementById('lc-tok-session');
+      if (tokEl) {
+        if (m.active && m.agentTokens > 0) {
+          tokEl.title = `Main ${App.fmtNum(m.mainTokens)} + agents ${App.fmtNum(m.agentTokens)} (input + output, same as the dashboard)`;
+          set('lc-tok-agents', ` incl. ${App.fmtNum(m.agentTokens)} agents`);
+        } else {
+          tokEl.title = 'input + output (same as the dashboard)';
+          set('lc-tok-agents', '');
+        }
+      }
+      // Cache tooltip: created vs read split (read is re-counted each turn, so it's usually the bulk).
+      const cacheEl = document.getElementById('lc-cache');
+      if (cacheEl) cacheEl.title = m.active
+        ? `created ${App.fmtNum(m.cacheCreation)} · read ${App.fmtNum(m.cacheRead)}` : '';
     } catch { /* transient */ }
   }
 
@@ -631,6 +681,42 @@ window.Views.livecode = (function () {
             <span class="muted">${App.fmtNum(s.contextTokens)} of ${App.fmtNum(s.contextSize)} (${s.contextPct}%)</span></span>`).join('')
         : '<span class="muted">none active in the last 5 minutes</span>';
     } catch { /* transient */ }
+  }
+
+  // Rolling usage-limit bars (session 5h + week 7d) from livecode.usage — server-computed % + reset
+  // time, backend-cached 5 min. Silently hidden when signed out / offline (available:false).
+  async function pollUsage() {
+    const host = document.getElementById('lc-usage');
+    if (!host) return;
+    try {
+      const u = await Bridge.call('livecode.usage', {}, 0);
+      if (!u || !u.available) { host.innerHTML = ''; return; }
+      host.innerHTML = usageRow('SESSION', u.sessionPct, u.sessionResetsAt)
+                     + usageRow('WEEK', u.weekPct, u.weekResetsAt);
+    } catch { /* transient — keep last render */ }
+  }
+
+  // One usage bar row: clamped fill + threshold color (≥95% crit, ≥80% warn) + "N% · resets …".
+  function usageRow(label, pct, resetsAt) {
+    if (pct == null) return '';
+    const c = Math.max(0, Math.min(100, Number(pct) || 0));
+    const cls = c >= 95 ? ' crit' : c >= 80 ? ' warn' : '';
+    const reset = resetsAt ? ` · resets ${App.esc(fmtReset(resetsAt))}` : '';
+    return `<div class="lc-usage-row">
+      <span class="lc-usage-label">${App.esc(label)}</span>
+      <div class="lc-bar-track"><div class="lc-bar-fill${cls}" style="width:${c}%"></div></div>
+      <span class="lc-usage-pct">${Math.round(c)}%${reset}</span>
+    </div>`;
+  }
+
+  // Compact reset time: just the time if it lands today (local), else "Fri 07:00 am".
+  function fmtReset(iso) {
+    if (!iso) return '';
+    const d = new Date(iso);
+    if (isNaN(d)) return '';
+    const hm = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    return d.toDateString() === new Date().toDateString()
+      ? hm : `${d.toLocaleDateString([], { weekday: 'short' })} ${hm}`;
   }
 
   // --- terminals ---------------------------------------------------------------
