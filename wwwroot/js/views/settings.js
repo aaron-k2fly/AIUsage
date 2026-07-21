@@ -39,6 +39,16 @@ window.Views.settings = (function () {
           <button class="btn btn-primary" onclick="Views.settings.save()">Save</button>
         </div>
         <div class="footnote">Changing the allowlist removes auto-inferred links that no longer match (manually assigned and confirmed links are kept).</div>
+      </div>
+
+      <div class="panel form-narrow">
+        <h2>Live Code</h2>
+        <label>Assigned tickets to list in the picker (1–20)</label>
+        <input id="set-lc-ticket-count" type="number" min="1" max="20" step="1" value="${App.esc(s.livecodeTicketCount)}">
+        <div style="margin-top:12px">
+          <button class="btn btn-primary" onclick="Views.settings.save()">Save</button>
+        </div>
+        <div class="footnote">How many of your most recently updated assigned tickets appear at the top of the Live Code session (finished tickets are always excluded).</div>
       </div>`;
   }
 
@@ -52,7 +62,8 @@ window.Views.settings = (function () {
         jiraFetchJql: document.getElementById('set-fetch-jql').value.trim(),
         scanPaths: document.getElementById('set-paths').value.trim(),
         projectKeyAllowlist: document.getElementById('set-allowlist').value.trim().toUpperCase(),
-        backfillFrom: document.getElementById('set-backfill').value
+        backfillFrom: document.getElementById('set-backfill').value,
+        livecodeTicketCount: document.getElementById('set-lc-ticket-count').value
       };
       try {
         await Bridge.call('settings.set', payload);
