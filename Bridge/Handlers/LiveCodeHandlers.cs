@@ -649,7 +649,7 @@ public static class LiveCodeHandlers
     private static string BuildResumeCommand(string shellKind, string sessionId, string? model, string? agent, string? permissionMode)
     {
         var sb = new StringBuilder("claude --resume ").Append(sessionId);
-        if (model is "opus" or "sonnet" or "haiku") sb.Append(" --model ").Append(model);
+        if (model is "opus" or "sonnet" or "haiku" or "fable") sb.Append(" --model ").Append(model);
         if (!string.IsNullOrWhiteSpace(agent)) sb.Append(" --agent ").Append(ShellQuote(shellKind, agent));
         if (permissionMode is not null) sb.Append(" --permission-mode ").Append(permissionMode);
         // Positional prompt: resume AND immediately tell Claude to continue the work.
@@ -691,7 +691,7 @@ public static class LiveCodeHandlers
 
         var sb = new StringBuilder("claude");
         sb.Append(" --session-id ").Append(sessionId);
-        if (model is "opus" or "sonnet" or "haiku") sb.Append(" --model ").Append(model);
+        if (model is "opus" or "sonnet" or "haiku" or "fable") sb.Append(" --model ").Append(model);
         if (permissionMode is not null) sb.Append(" --permission-mode ").Append(permissionMode);
         sb.Append(' ').Append(ShellQuote(shellKind, prompt));
         return sb.ToString();

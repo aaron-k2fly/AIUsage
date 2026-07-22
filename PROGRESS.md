@@ -1,6 +1,17 @@
 # PROGRESS — AI Usage Tracker
 
-_Last updated: 2026-07-21_
+_Last updated: 2026-07-22_
+
+## 2026-07-22: Live Code — add **Fable** to the model dropdown
+
+The Live Code model picker only listed Opus/Sonnet/Haiku (+ Default). Added **Fable** (`claude-fable-5`,
+Claude 5 family). Two hardcoded spots drive this and both were updated:
+- **`wwwroot/js/views/livecode.js`** — `MODELS` array now includes `{ value: 'fable', label: 'Fable' }`.
+- **`Bridge/Handlers/LiveCodeHandlers.cs`** — both `--model` whitelists (`BuildClaudeCommand`,
+  `BuildResumeCommand`) now accept `"fable"`; without this the backend silently dropped the flag and
+  launched with the session default.
+- `SessionAggregator.ContextWindow` already defaults non-Haiku models to 1M, so Fable's context bar is
+  correct with no logic change (doc comment updated to mention fable). Verified: build clean.
 
 ## 2026-07-21: Dashboard — **Automation & extensions** charts — branch `SESSION-DETAIL`
 

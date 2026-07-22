@@ -196,7 +196,7 @@ public sealed class SessionAggregator(TicketKeyInferrer inferrer)
     }
 
     /// <summary>Context-window size for a model: 1M for current Claude models, 200k for Haiku. Accepts
-    /// a full transcript model id or a dropdown alias (opus/sonnet/haiku).</summary>
+    /// a full transcript model id or a dropdown alias (opus/sonnet/haiku/fable).</summary>
     public static long ContextWindow(string? model) =>
         !string.IsNullOrEmpty(model) && model.Contains("haiku", StringComparison.OrdinalIgnoreCase)
             ? 200_000 : 1_000_000;

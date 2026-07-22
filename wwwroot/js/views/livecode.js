@@ -25,6 +25,7 @@ window.Views.livecode = (function () {
 
   const MODELS = [
     { value: '', label: 'Default (session)' },
+    { value: 'fable', label: 'Fable' },
     { value: 'opus', label: 'Opus' },
     { value: 'sonnet', label: 'Sonnet' },
     { value: 'haiku', label: 'Haiku' }
