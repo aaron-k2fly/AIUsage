@@ -68,6 +68,15 @@ AIUsage/
 │   └── XlsxWriter.cs         # hand-rolled minimal OOXML .xlsx writer
 ├── Resources/
 │   └── appicon.ico           # multi-size icon (BMP frames; exe + window icon)
+├── AIUsage.Tests/            # xUnit test project (dotnet test AIUsage.Tests) — NOT in a .sln
+│   ├── AIUsage.Tests.csproj  # net10.0; ProjectReference → AIUsage.csproj; xUnit + Sqlite
+│   ├── Helpers/TestDb.cs     # fresh in-memory migrated SQLite DB per test
+│   ├── TicketKeyInferrerTests.cs
+│   ├── SessionAggregatorTests.cs  # Aggregate(...) + ContextWindow
+│   ├── XlsxWriterTests.cs
+│   ├── MigrationsTests.cs
+│   ├── SessionRepoTests.cs
+│   └── DataRepoTests.cs      # Ticket + ManualEntry repo round-trips
 └── wwwroot/                  # frontend (embedded into the exe at build time)
     ├── index.html            # shell: sidebar nav + <main id="content"> + script tags
     ├── css/app.css
@@ -225,6 +234,27 @@ right tab's terminal renders them.
 
 Photino.NET · Microsoft.Data.Sqlite · System.Security.Cryptography.ProtectedData ·
 SQLitePCLRaw.bundle_e_sqlite3 · **Porta.Pty** (ConPTY wrapper for the Live Code terminal; managed-only).
+
+---
+
+## Tests (`AIUsage.Tests/`, xUnit)
+
+Run with **`dotnet test AIUsage.Tests`**. The project references `AIUsage.csproj` and is
+**deliberately not** part of a `.sln` (a solution would make the bare root `dotnet run`/`dotnet build`
+ambiguous). Because the test folder is nested inside the app project directory, `AIUsage.csproj`
+excludes `AIUsage.Tests\**` from its default compile glob.
+
+| Test file | Covers |
+| --- | --- |
+| `TicketKeyInferrerTests.cs` | Allowlist filtering, key-shape regex, `IsRealBranch`. |
+| `SessionAggregatorTests.cs` | `Aggregate` — grouping, sidechain skip, tool buckets, token accumulation, timestamps, title precedence, source priority (branch>cwd>prompt), malformed-line skip; `ContextWindow` sizing. |
+| `XlsxWriterTests.cs` | Zip parts, numeric-vs-string cells, null cells, XML escaping, column-letter mapping, sheet-name sanitising. |
+| `MigrationsTests.cs` | SchemaVersion 6, table creation, category seed, idempotency, no spurious backfill flag. |
+| `SessionRepoTests.cs` | Upsert/Get/List, additive token accumulation, auto-link → confirm → remove, counter reset, prune + FK cascade. |
+| `DataRepoTests.cs` | `TicketRepo` / `ManualEntryRepo` round-trips. |
+
+Data-layer tests use `Helpers/TestDb` — a fresh in-memory SQLite DB migrated to the current schema
+per test (repositories take an explicit connection, so no global `Db` state is touched → parallel-safe).
 
 ---
 

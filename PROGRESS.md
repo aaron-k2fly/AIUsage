@@ -2,6 +2,30 @@
 
 _Last updated: 2026-07-22_
 
+## 2026-07-22: First unit tests — `AIUsage.Tests` (xUnit) — branch `AIUSAGE-UNIT-TEST`
+
+The project had no automated tests; added a first suite covering the main scenarios (not 100%).
+Design spec: `docs/superpowers/specs/2026-07-22-unit-tests-design.md`.
+
+- **New `AIUsage.Tests/` xUnit project** (`net10.0`), `ProjectReference` → `AIUsage.csproj`, with
+  `Microsoft.Data.Sqlite` + `SQLitePCLRaw.bundle_e_sqlite3` referenced directly so the native
+  provider lands in the test output.
+- **Deliberately NOT wired into a `.sln`** — a solution would make the documented bare
+  `dotnet run` / `dotnet build` at the repo root ambiguous. Run tests with **`dotnet test AIUsage.Tests`**.
+- **Nested-project gotcha fixed**: the test folder sits inside the app project dir, so the app's
+  default `**/*.cs` glob was compiling the tests (Fact/Theory not found). `AIUsage.csproj` now
+  `Compile Remove`s `AIUsage.Tests\**`.
+- **Coverage (64 tests, all green):** `TicketKeyInferrer` (allowlist/regex/IsRealBranch),
+  `SessionAggregator.Aggregate` (grouping, sidechain skip, tool buckets, token accumulation,
+  timestamps, title precedence, ticket-key source priority branch>cwd>prompt, malformed-line skip)
+  + `ContextWindow`, `XlsxWriter` (zip parts, cell typing, XML escaping, column letters, sheet-name
+  sanitising), `Migrations` (v6 stamp, tables, seed, idempotency), `SessionRepo` (upsert/get/list,
+  additive counters, link lifecycle, reset, prune + FK cascade), `TicketRepo`/`ManualEntryRepo`.
+- **Data-layer tests** use `Helpers/TestDb` — a fresh in-memory SQLite DB migrated per test
+  (repos take an explicit connection, so no global `Db` static is touched → parallel-safe).
+- Verified: `dotnet test AIUsage.Tests` → 64 passed / 0 failed; root `dotnet build` still clean and
+  single-project. Docs synced (CLAUDE.md, `.claude/STRUCTURE.md`).
+
 ## 2026-07-22: Live Code — add **Fable** to the model dropdown
 
 The Live Code model picker only listed Opus/Sonnet/Haiku (+ Default). Added **Fable** (`claude-fable-5`,

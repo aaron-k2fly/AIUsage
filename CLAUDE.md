@@ -25,7 +25,14 @@ dotnet run -- --accounttest             # headless: print subscription plan + us
 dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -p:DebugType=none -p:DebugSymbols=false
 ```
 
-There is no test project — verification is done via the `--scan`/`--sql`/`--route`/`--pty-test`/`--envtest` CLI verbs and window screenshots.
+Unit tests live in **`AIUsage.Tests/`** (xUnit) — run with **`dotnet test AIUsage.Tests`**. They cover
+the pure-logic core (transcript aggregation, ticket-key inference, context-window sizing, the XLSX
+writer) plus the data layer (migrations + repositories against an in-memory SQLite DB). The suite is
+deliberately **not** wired into a `.sln` (a solution would make the bare `dotnet run`/`dotnet build`
+at the repo root ambiguous); root commands still target the single app csproj, and the app project
+excludes `AIUsage.Tests\**` from its compile glob (the test folder is nested inside it). Beyond the
+tests, UI/integration verification is still done via the `--scan`/`--sql`/`--route`/`--pty-test`/`--envtest`
+CLI verbs and window screenshots.
 
 Packages: Photino.NET, Microsoft.Data.Sqlite, System.Security.Cryptography.ProtectedData, SQLitePCLRaw.bundle_e_sqlite3, **Porta.Pty** (ConPTY wrapper for the Live Code terminal; managed-only, so the single-file publish is unaffected).
 
