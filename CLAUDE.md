@@ -60,6 +60,16 @@ The bridge also has an **unsolicited event channel** for streaming (used by the 
 - Claude Code encodes a session's cwd into its `~/.claude/projects/<name>` folder by replacing `:`, `\`, `/` with `-`. Live Code launches `claude --session-id <guid>` so `FindActiveTranscript` reads exactly `<guid>.jsonl` — matching by "newest file in the dir" is wrong because other concurrent Claude Code sessions (even this one) write to the same folder.
 - Git Bash is resolved from the Git-for-Windows install paths, **never** a bare `bash.exe` on PATH — on Windows that's `C:\Windows\System32\bash.exe` (the WSL launcher), which fails with `execvpe(/bin/bash)` when there's no distro (`ShellResolver.IsSystemShim`).
 
+## Screen Capture & Window Access
+
+- **NEVER** capture the screen programmatically from PowerShell/.NET. Do not use `System.Drawing` `CopyFromScreen`, `System.Windows.Forms` screen grabs, or `Graphics.FromImage`/`Bitmap.Save` to screenshot the desktop or any application window.
+- **NEVER** use `Add-Type -TypeDefinition` to compile inline C# that P/Invokes `user32.dll`/`gdi32.dll` — e.g. `EnumWindows`, `GetWindowRect`, `GetWindowText`, `GetWindowThreadProcessId`, `MoveWindow`. Do not enumerate, locate, resize, or capture the windows of other processes.
+- **NEVER** reflectively load .NET assemblies in memory to interact with the screen, windows, or input devices.
+- If you need to see the UI to verify a change, **ASK the user to take a screenshot and paste it in**, or use the application's own built-in screenshot / export / replay feature. Do not script the capture.
+- Do not write captured images to `%TEMP%`, the Claude scratchpad, or anywhere else as a workaround for asking the user.
+
+Context: In-memory `System.Drawing`/`CopyFromScreen` screen capture and Win32 window enumeration launched from `powershell.exe` trigger Microsoft Defender "Suspicious screen capture activity" (Collection; AMSI + Behavior). See INC0035079 / INC0035085 — part of the Claude/EDR false-positive family under INC0034383.
+
 ## Companion docs — keep them in sync
 
 - **`.claude/STRUCTURE.md`** — the detailed file-by-file inventory, full bridge-action catalog, DB schema, and settings keys that this file deliberately omits. **When you add/remove/rename/repurpose a file, bridge action, DB table/column, or settings key, update `.claude/STRUCTURE.md` AND this `CLAUDE.md` in the same change.**
