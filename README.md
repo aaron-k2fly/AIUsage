@@ -19,9 +19,12 @@ SQLite file.
   text, filtered by a project-key allowlist).
 - **Dashboard** — token usage per week, AI-assisted tickets per week, a breakdown of *what* the AI
   did (edit/write/read/shell/other), Claude model usage over time, top tickets, and ticket-type ×
-  activity.
+  activity — plus **Automation & extensions** charts (sub-agents, skills, MCP servers, and hooks
+  used across all sessions).
 - **Sessions** — a review queue of detected sessions; confirm, reassign, or dismiss the inferred
-  ticket link.
+  ticket link. Each session opens a **detail page** with per-tool and per-model breakdowns, reply /
+  tool-call counts, an agent / active / idle time split, token cost, and the agents, skills, MCP
+  tools, and hooks that session used.
 - **Manual entry** — log AI-assisted work that wasn't captured automatically.
 - **Tickets** — a JIRA-enriched ticket list (status, type, project, sprint, priority, last
   updated), with status colouring, an "AI-touched" filter, and on-demand import of more tickets
@@ -67,8 +70,9 @@ usage), started from a selected JIRA ticket. Starting a session auto-links the t
   `.md` file.
 - **Resume Sessions** — browse the existing Claude Code sessions for a folder (labelled by their
   first prompt) and resume any one of them.
-- **Metrics** — per-session tokens and context-window usage (used-of-max), plus your plan, weekly
-  tokens, and the top active Claude Code sessions.
+- **Metrics** — per-session tokens (with cache shown separately) and context-window usage
+  (used-of-max), plus your plan, weekly tokens, rolling **usage-limit bars** (5-hour session &
+  7-day week windows, from Claude's own `/usage` data), and the top active Claude Code sessions.
 
 > Live Code is **Windows-only** (it relies on ConPTY) and requires the
 > [Claude Code CLI](https://claude.ai/code) to be installed and on `PATH`.
