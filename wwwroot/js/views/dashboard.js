@@ -19,6 +19,8 @@ window.Views.dashboard = (function () {
   // Validated categorical hues in fixed slot order — assigned to models by name so a
   // model keeps the same colour across renders.
   const PALETTE = ['#2a78d6', '#1baf7a', '#eda100', '#008300', '#4a3aa7', '#e34948', '#e87ba4', '#eb6834'];
+  // One hue per automation category (agents / skills / MCP servers / hooks).
+  const EXT_COLORS = { agent: '#2a78d6', skill: '#1baf7a', mcp: '#eda100', hook: '#4a3aa7' };
 
   let charts = [];
   let topMetric = 'tokens';
@@ -48,6 +50,24 @@ window.Views.dashboard = (function () {
     </div>`;
   }
 
+  // The four automation datasets, normalised (missing → []).
+  function extOf(s) {
+    return {
+      agent: s.agentUsage || [],
+      skill: s.skillUsage || [],
+      mcp: s.mcpUsage || [],
+      hook: s.hookUsage || []
+    };
+  }
+
+  function extPanel(title, canvasId, rows, footnote) {
+    const body = rows.length
+      ? `<div class="chart-box"><canvas id="${canvasId}"></canvas></div>`
+      : `<div class="empty" style="padding:34px 0">None recorded yet.</div>`;
+    return `<div class="panel"><h2>${title}</h2>${body}
+      <div class="footnote">${footnote}</div></div>`;
+  }
+
   async function load(el) {
     destroyCharts();
     let s;
@@ -59,6 +79,8 @@ window.Views.dashboard = (function () {
     }
 
     const hasData = s.weekly.length || s.activity.length;
+    const ext = extOf(s);
+    const hasExt = ext.agent.length || ext.skill.length || ext.mcp.length || ext.hook.length;
 
     el.innerHTML = `<h1>Dashboard</h1>
       <div class="grid tiles">
@@ -90,9 +112,52 @@ window.Views.dashboard = (function () {
         <div class="panel"><h2>Ticket type × AI activity</h2>
           <div class="chart-box"><canvas id="ch-matrix"></canvas></div>
           <div class="footnote">Issue types appear after tickets are synced from JIRA.</div></div>
+      </div>`}
+      ${!hasExt ? '' : `
+      <h2 style="margin:26px 0 0">Automation &amp; extensions</h2>
+      <div class="footnote" style="margin:2px 0 0">How often sub-agents, skills, MCP servers and hooks were used across all sessions.</div>
+      <div class="grid charts" style="margin-top:14px">
+        ${extPanel('Sub-agents used', 'ch-agents', ext.agent, 'Launched via the Task/Agent tool.')}
+        ${extPanel('Skills used', 'ch-skills', ext.skill, 'Skill-tool invocations.')}
+        ${extPanel('MCP servers used', 'ch-mcps', ext.mcp, 'Tool calls grouped by MCP server.')}
+        ${extPanel('Hooks fired', 'ch-hooks', ext.hook, 'Hook executions recorded in transcripts.')}
       </div>`}`;
 
     if (hasData) renderCharts(s);
+    if (hasExt) renderExtCharts(ext);
+  }
+
+  function renderExtCharts(ext) {
+    const trunc = function (v) {
+      const l = this.getLabelForValue(v);
+      return l.length > 26 ? l.slice(0, 25) + '…' : l;
+    };
+    function extBar(id, rows, color) {
+      if (!rows.length) return;
+      makeChart(id, {
+        type: 'bar',
+        data: {
+          labels: rows.map(r => r.name),
+          datasets: [{ data: rows.map(r => r.count), backgroundColor: color, borderRadius: 4, maxBarThickness: 22 }]
+        },
+        options: {
+          indexAxis: 'y',
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { display: false },
+            tooltip: { callbacks: { title: ctx => ctx[0].label, label: ctx => App.fmtNum(ctx.raw) + ' uses' } }
+          },
+          scales: {
+            x: { grid: { color: GRID }, border: { display: false }, ticks: { color: INK_MUTED, precision: 0, callback: v => App.fmtNum(v) } },
+            y: { grid: { display: false }, ticks: { color: INK_MUTED, callback: trunc } }
+          }
+        }
+      });
+    }
+    extBar('ch-agents', ext.agent, EXT_COLORS.agent);
+    extBar('ch-skills', ext.skill, EXT_COLORS.skill);
+    extBar('ch-mcps', ext.mcp, EXT_COLORS.mcp);
+    extBar('ch-hooks', ext.hook, EXT_COLORS.hook);
   }
 
   function renderCharts(s) {

@@ -236,6 +236,34 @@ public static class SessionRepo
         return rows;
     }
 
+    /// <summary>Full stored row for one session (detail page), with its ticket links and any
+    /// explicit activity-category name. Returns null if the session id is unknown.</summary>
+    public static Dictionary<string, object?>? Get(SqliteConnection conn, string id)
+    {
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT s.id, s.title, s.project_dir, s.git_branch, s.model, s.file_path,
+                   s.started_at, s.ended_at, s.input_tokens, s.output_tokens,
+                   s.cache_creation_tokens, s.cache_read_tokens,
+                   s.edit_count, s.write_count, s.read_count, s.bash_count, s.other_tool_count,
+                   s.user_message_count, s.cc_version, s.review_state,
+                   (SELECT ac.name FROM SessionTicketLinks l
+                      LEFT JOIN ActivityCategories ac ON ac.id = l.category_id
+                      WHERE l.session_id = s.id AND l.category_id IS NOT NULL LIMIT 1) AS category_name,
+                   (SELECT GROUP_CONCAT(l.ticket_key || '|' || l.source, ';')
+                      FROM SessionTicketLinks l WHERE l.session_id = s.id) AS links
+            FROM Sessions s
+            WHERE s.id = $id
+            """;
+        cmd.Parameters.AddWithValue("$id", id);
+        using var reader = cmd.ExecuteReader();
+        if (!reader.Read()) return null;
+        var row = new Dictionary<string, object?>();
+        for (var i = 0; i < reader.FieldCount; i++)
+            row[ToCamel(reader.GetName(i))] = reader.IsDBNull(i) ? null : reader.GetValue(i);
+        return row;
+    }
+
     private static string ToCamel(string snake)
     {
         var parts = snake.Split('_');

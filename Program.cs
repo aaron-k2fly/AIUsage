@@ -83,6 +83,10 @@ internal static class Program
                 Console.WriteLine($"plan={acct.Plan ?? "(unknown)"} usageResetsAt={acct.UsageResetsAt?.ToString("o") ?? "(unknown)"}");
                 break;
 
+            case "--detailtest" when args.Length > 1:
+                RunDetailTest(args[1]);
+                break;
+
             case "--sql" when args.Length > 1:
                 using (var conn = Db.Open())
                 using (var cmd = conn.CreateCommand())
@@ -123,6 +127,36 @@ internal static class Program
                 Console.WriteLine("Usage: AIUsage [--scan | --sql \"SELECT ...\" | --set <key> <value> | --pty-test | --envtest]");
                 break;
         }
+    }
+
+    /// <summary>Headless check for the Session Detail deep re-parse (SessionAggregator.ReadDetail):
+    /// prints the per-tool / per-model / timing breakdown for one session id, exactly as the
+    /// sessions.detail handler feeds the detail page.</summary>
+    private static void RunDetailTest(string sessionId)
+    {
+        using var conn = Db.Open();
+        var row = Data.Repositories.SessionRepo.Get(conn, sessionId);
+        if (row is null) { Console.WriteLine($"session '{sessionId}' not found"); Environment.ExitCode = 1; return; }
+
+        var filePath = row.GetValueOrDefault("filePath") as string;
+        Console.WriteLine($"title={row.GetValueOrDefault("title")}  review={row.GetValueOrDefault("reviewState")}  links={row.GetValueOrDefault("links")}");
+        if (string.IsNullOrEmpty(filePath) || !File.Exists(filePath))
+        {
+            Console.WriteLine($"transcript missing ({filePath}) — detail would fall back to stored counters");
+            return;
+        }
+
+        var d = Scanner.SessionAggregator.ReadDetail(filePath, sessionId);
+        var sub = Scanner.SessionAggregator.SubagentTokens(filePath);
+        Console.WriteLine($"tokens: in={d.InputTokens} out={d.OutputTokens} cacheCreate={d.CacheCreationTokens} cacheRead={d.CacheReadTokens}");
+        Console.WriteLine($"messages: {d.PromptCount} prompts · {d.ReplyCount} replies · {d.ToolCallCount} tool calls");
+        Console.WriteLine($"time split: agent={d.AgentMs / 60000.0:0.0}m active={d.ActiveMs / 60000.0:0.0}m idle={d.IdleMs / 60000.0:0.0}m total={(d.AgentMs + d.ActiveMs + d.IdleMs) / 60000.0:0.0}m");
+        Console.WriteLine("tools: " + string.Join(" · ", d.ToolCounts.OrderByDescending(kv => kv.Value).Select(kv => $"{kv.Key} ×{kv.Value}")));
+        Console.WriteLine("models: " + string.Join(" · ", d.Models.Select(kv => $"{kv.Key} (out {kv.Value.Output})")));
+        Console.WriteLine("agents: " + string.Join(" · ", d.Agents.Select(kv => $"{kv.Key} ×{kv.Value}")));
+        Console.WriteLine("skills: " + string.Join(" · ", d.Skills.Select(kv => $"{kv.Key} ×{kv.Value}")));
+        Console.WriteLine("hooks: " + string.Join(" · ", d.Hooks.Select(kv => $"{kv.Key} ×{kv.Value}")));
+        Console.WriteLine($"sub-agents: inOut={sub.InOut} cache={sub.Cache}");
     }
 
     /// <summary>Headless smoke test for the ConPTY interop (Terminal/ConPtySession): spawns

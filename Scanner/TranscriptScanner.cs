@@ -30,6 +30,9 @@ public sealed class TranscriptScanner
         var inferrer = new TicketKeyInferrer(SettingsStore.ProjectKeyAllowlist());
         var aggregator = new SessionAggregator(inferrer);
         var backfillFrom = SettingsStore.BackfillFrom();
+        // Set once by the v6 migration: existing sessions predate ToolUsage, so do a one-time
+        // full-file ToolUsage parse over every transcript at the end of this scan.
+        var toolUsageBackfill = SettingsStore.Get("toolusage_backfill_pending") == "1";
 
         int newFiles = 0, updatedFiles = 0, skippedFiles = 0;
 
@@ -94,6 +97,10 @@ public sealed class TranscriptScanner
                     if (fullReparse)
                         SessionRepo.DeleteSessionsNotIn(conn, file, sessions.Keys);
 
+                    // Refresh this file's sub-agent/skill/MCP/hook counts (set semantics, full-file
+                    // parse — decoupled from the incremental token counters above).
+                    ToolUsageRepo.ReplaceForFile(conn, SessionAggregator.ReadToolUsage(file));
+
                     SaveScanState(conn, file, newOffset, mtime, fi.Length);
                     tx.Commit();
 
@@ -103,7 +110,36 @@ public sealed class TranscriptScanner
             }
         }
 
+        if (toolUsageBackfill)
+        {
+            BackfillToolUsage(conn, backfillFrom);
+            SettingsStore.Set("toolusage_backfill_pending", null); // done — clear the flag
+        }
+
         return new ScanResult(CountSessions(conn), newFiles, updatedFiles, skippedFiles);
+    }
+
+    /// <summary>One-time pass (v6 upgrade): re-parse every transcript purely for ToolUsage and replace
+    /// each session's rows. Independent of the incremental offset/token state — set semantics make it
+    /// safe to run over files the incremental loop already handled this scan.</summary>
+    private static void BackfillToolUsage(Microsoft.Data.Sqlite.SqliteConnection conn, DateTime? backfillFrom)
+    {
+        foreach (var root in SettingsStore.ScanRoots())
+        {
+            if (!Directory.Exists(root)) continue;
+            foreach (var projectDir in Directory.EnumerateDirectories(root))
+            {
+                foreach (var file in Directory.EnumerateFiles(projectDir, "*.jsonl", SearchOption.TopDirectoryOnly))
+                {
+                    if (backfillFrom is not null && new FileInfo(file).LastWriteTimeUtc < backfillFrom) continue;
+                    var usage = SessionAggregator.ReadToolUsage(file);
+                    if (usage.Count == 0) continue;
+                    using var tx = conn.BeginTransaction();
+                    ToolUsageRepo.ReplaceForFile(conn, usage);
+                    tx.Commit();
+                }
+            }
+        }
     }
 
     /// <summary>

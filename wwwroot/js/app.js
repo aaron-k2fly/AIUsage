@@ -4,12 +4,18 @@
   const routes = window.Views || {};
 
   function navigate() {
-    const route = (location.hash || '#dashboard').slice(1);
+    // Hash may carry a param after the first "/" — e.g. "#session/<id>" → route "session", param "<id>".
+    const raw = (location.hash || '#dashboard').slice(1);
+    const slash = raw.indexOf('/');
+    const route = slash === -1 ? raw : raw.slice(0, slash);
+    const param = slash === -1 ? null : decodeURIComponent(raw.slice(slash + 1));
     const view = routes[route] || routes.dashboard;
+    // The detail page keeps its parent ("Sessions") highlighted in the sidebar.
+    const navRoute = route === 'session' ? 'sessions' : route;
     document.querySelectorAll('#sidebar a').forEach(a =>
-      a.classList.toggle('active', a.dataset.route === route));
+      a.classList.toggle('active', a.dataset.route === navRoute));
     content.innerHTML = '';
-    view.render(content);
+    view.render(content, param);
   }
 
   window.addEventListener('hashchange', navigate);

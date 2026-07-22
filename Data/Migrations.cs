@@ -71,6 +71,18 @@ public static class Migrations
                 PRIMARY KEY (session_id, ticket_key)
             );
 
+            -- Per-session usage of sub-agents / skills / MCP servers / hooks, derived (set
+            -- semantics) from a full transcript parse. Powers the dashboard's automation charts;
+            -- the token/tool-bucket counters in Sessions are unaffected. category ∈
+            -- agent|skill|mcp|hook. Rows cascade-delete with their session.
+            CREATE TABLE IF NOT EXISTS ToolUsage (
+                session_id TEXT NOT NULL REFERENCES Sessions(id) ON DELETE CASCADE,
+                category TEXT NOT NULL,
+                name TEXT NOT NULL,
+                count INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (session_id, category, name)
+            );
+
             CREATE TABLE IF NOT EXISTS ManualEntries (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 ticket_key TEXT NOT NULL,
@@ -89,8 +101,16 @@ public static class Migrations
             CREATE INDEX IF NOT EXISTS idx_links_ticket ON SessionTicketLinks(ticket_key);
             CREATE INDEX IF NOT EXISTS idx_manual_ticket ON ManualEntries(ticket_key);
             CREATE INDEX IF NOT EXISTS idx_sessions_started ON Sessions(started_at);
+            CREATE INDEX IF NOT EXISTS idx_toolusage_cat ON ToolUsage(category, name);
             """;
         cmd.ExecuteNonQuery();
+
+        // ToolUsage arrived in v6 and isn't part of the incremental token scan, so already-scanned
+        // sessions have no rows. Flag a one-time backfill (a full ToolUsage-only re-parse of every
+        // transcript) for the next scan — but only when there's existing data to backfill.
+        var oldVersion = CurrentVersion(conn);
+        if (oldVersion is > 0 and < 6 && HasSessions(conn))
+            SetSetting(conn, "toolusage_backfill_pending", "1");
 
         AddColumnIfMissing(conn, "Sessions", "title_is_custom", "INTEGER NOT NULL DEFAULT 0");
         AddColumnIfMissing(conn, "Tickets", "project", "TEXT");
@@ -100,7 +120,31 @@ public static class Migrations
         AddColumnIfMissing(conn, "Tickets", "description", "TEXT");
 
         Seed(conn);
-        SetVersion(conn, 5);
+        SetVersion(conn, 6);
+    }
+
+    /// <summary>Current stored schema version, or 0 if none recorded yet (fresh DB).</summary>
+    private static int CurrentVersion(SqliteConnection conn)
+    {
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT version FROM SchemaVersion LIMIT 1";
+        return cmd.ExecuteScalar() is { } v ? Convert.ToInt32(v) : 0;
+    }
+
+    private static bool HasSessions(SqliteConnection conn)
+    {
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT EXISTS(SELECT 1 FROM Sessions)";
+        return Convert.ToInt64(cmd.ExecuteScalar()) > 0;
+    }
+
+    private static void SetSetting(SqliteConnection conn, string key, string value)
+    {
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "INSERT INTO Settings(key, value) VALUES ($k, $v) ON CONFLICT(key) DO UPDATE SET value = excluded.value";
+        cmd.Parameters.AddWithValue("$k", key);
+        cmd.Parameters.AddWithValue("$v", value);
+        cmd.ExecuteNonQuery();
     }
 
     /// <summary>Idempotent ALTER TABLE for columns added after a table's initial CREATE shipped.</summary>
