@@ -23,6 +23,14 @@
     </EmbeddedResource>
   </ItemGroup>
 
+  <!-- The test project lives in a subfolder of this one; keep its sources out of the app's
+       default **/*.cs compile glob (otherwise the app tries to compile the tests). -->
+  <ItemGroup>
+    <Compile Remove="AIUsage.Tests\**\*.cs" />
+    <EmbeddedResource Remove="AIUsage.Tests\**" />
+    <None Remove="AIUsage.Tests\**" />
+  </ItemGroup>
+
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.9" />
     <PackageReference Include="Photino.NET" Version="4.0.16" />
