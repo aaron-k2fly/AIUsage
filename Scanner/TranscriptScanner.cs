@@ -33,6 +33,9 @@ public sealed class TranscriptScanner
         // Set once by the v6 migration: existing sessions predate ToolUsage, so do a one-time
         // full-file ToolUsage parse over every transcript at the end of this scan.
         var toolUsageBackfill = SettingsStore.Get("toolusage_backfill_pending") == "1";
+        // Set once by the v7 migration: sessions scanned before SessionDailyTokens existed have no
+        // per-day buckets, and the incremental offset means they'd never get any.
+        var dailyBackfill = SettingsStore.Get("dailytokens_backfill_pending") == "1";
 
         int newFiles = 0, updatedFiles = 0, skippedFiles = 0;
 
@@ -83,6 +86,7 @@ public sealed class TranscriptScanner
                         // additive counters so accumulation doesn't double-count
                         fullReparse = true;
                         SessionRepo.ResetCountersForFile(conn, file);
+                        SessionDailyRepo.DeleteForFile(conn, file);
                     }
 
                     var (lines, newOffset) = ReadCompleteLines(file, startOffset);
@@ -90,6 +94,7 @@ public sealed class TranscriptScanner
                     foreach (var agg in sessions.Values)
                     {
                         SessionRepo.Upsert(conn, agg);
+                        SessionDailyRepo.Accumulate(conn, agg);   // after Upsert — the FK parent must exist
                         foreach (var (key, source) in agg.TicketKeys)
                             SessionRepo.AddAutoLink(conn, agg.SessionId, key, source);
                     }
@@ -116,7 +121,40 @@ public sealed class TranscriptScanner
             SettingsStore.Set("toolusage_backfill_pending", null); // done — clear the flag
         }
 
+        if (dailyBackfill)
+        {
+            BackfillDailyTokens(conn, aggregator, backfillFrom);
+            SettingsStore.Set("dailytokens_backfill_pending", null); // done — clear the flag
+        }
+
         return new ScanResult(CountSessions(conn), newFiles, updatedFiles, skippedFiles);
+    }
+
+    /// <summary>One-time pass (v7 upgrade): re-parse every transcript in full and replace each file's
+    /// per-day token buckets. Replace (not add) semantics, so it's safe over files the incremental
+    /// loop already accumulated this scan, and idempotent if interrupted and re-run. Only the
+    /// aggregate's DailyTokens are used — the session rows themselves are left untouched.</summary>
+    private static void BackfillDailyTokens(Microsoft.Data.Sqlite.SqliteConnection conn,
+        SessionAggregator aggregator, DateTime? backfillFrom)
+    {
+        foreach (var root in SettingsStore.ScanRoots())
+        {
+            if (!Directory.Exists(root)) continue;
+            foreach (var projectDir in Directory.EnumerateDirectories(root))
+            {
+                foreach (var file in Directory.EnumerateFiles(projectDir, "*.jsonl", SearchOption.TopDirectoryOnly))
+                {
+                    if (backfillFrom is not null && new FileInfo(file).LastWriteTimeUtc < backfillFrom) continue;
+                    Dictionary<string, SessionAggregate> sessions;
+                    try { sessions = aggregator.Aggregate(File.ReadLines(file), file); }
+                    catch (IOException) { continue; } // file busy — leave it for a later scan
+                    if (sessions.Count == 0) continue;
+                    using var tx = conn.BeginTransaction();
+                    SessionDailyRepo.ReplaceForFile(conn, file, sessions.Values);
+                    tx.Commit();
+                }
+            }
+        }
     }
 
     /// <summary>One-time pass (v6 upgrade): re-parse every transcript purely for ToolUsage and replace

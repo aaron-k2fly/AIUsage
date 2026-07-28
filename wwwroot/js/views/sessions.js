@@ -88,6 +88,7 @@ window.Views.sessions = (function () {
           <div class="muted" style="font-size:11.5px">${App.esc(projectName(s.projectDir))}
             ${s.reviewState === 'pending' ? '<span class="badge pending">needs review</span>' : ''}</div>
         </td>
+        <td class="muted" style="white-space:nowrap" title="Started ${App.esc(App.fmtDate(s.startedAt))}">${App.fmtDate(s.endedAt || s.startedAt)}</td>
         <td class="muted" style="white-space:nowrap">${App.fmtDate(s.startedAt)}</td>
         <td class="muted">${App.esc((s.model || '').replace('claude-', ''))}</td>
         <td title="input ${s.inputTokens || 0} / output ${s.outputTokens || 0}">
@@ -102,13 +103,13 @@ window.Views.sessions = (function () {
       <div class="panel" style="padding:0">
         <table>
           <thead><tr>
-            <th>Session</th><th>Started</th><th>Model</th><th>Tokens</th>
+            <th>Session</th><th>Last activity</th><th>Started</th><th>Model</th><th>Tokens</th>
             <th>Tools</th><th>Tickets</th><th>Actions</th>
           </tr></thead>
           <tbody>${rows}</tbody>
         </table>
       </div>
-      <div class="footnote">Tokens = input + output (cache reads excluded). Tool bar: blue = edit/write, light blue = read, orange = shell, grey = other.</div>`;
+      <div class="footnote">Newest activity first — resuming a session keeps its original “Started” date, so the list sorts on last activity. Tokens = input + output (cache reads excluded). Tool bar: blue = edit/write, light blue = read, orange = shell, grey = other.</div>`;
   }
 
   async function act(promise, okMessage) {

@@ -42,6 +42,59 @@ public class SessionAggregatorTests
     }
 
     [Fact]
+    public void Aggregate_buckets_tokens_by_the_day_each_message_was_sent()
+    {
+        var lines = new[]
+        {
+            """{"sessionId":"s1","type":"assistant","timestamp":"2026-07-01T10:00:00Z","message":{"usage":{"input_tokens":10,"output_tokens":5}}}""",
+            """{"sessionId":"s1","type":"assistant","timestamp":"2026-07-01T23:00:00Z","message":{"usage":{"input_tokens":1,"output_tokens":1}}}""",
+            """{"sessionId":"s1","type":"assistant","timestamp":"2026-07-04T08:00:00Z","message":{"usage":{"input_tokens":100,"output_tokens":50}}}""",
+        };
+
+        var agg = Aggregate(lines)["s1"];
+
+        // Day keys are local, so derive the expected ones the same way rather than hard-coding UTC.
+        var d1 = SessionAggregator.LocalDay("2026-07-01T10:00:00Z")!;
+        var d2 = SessionAggregator.LocalDay("2026-07-01T23:00:00Z")!;
+        var d3 = SessionAggregator.LocalDay("2026-07-04T08:00:00Z")!;
+
+        // Whatever the zone, the buckets must always sum back to the flat counters.
+        Assert.Equal(agg.InputTokens + agg.OutputTokens,
+            agg.DailyTokens.Values.Sum(t => t.In + t.Out));
+        Assert.Equal(167, agg.DailyTokens.Values.Sum(t => t.In + t.Out));
+        Assert.Equal(150, agg.DailyTokens[d3].In + agg.DailyTokens[d3].Out);
+        if (d1 == d2)   // same local day: the two messages share one bucket
+            Assert.Equal(17, agg.DailyTokens[d1].In + agg.DailyTokens[d1].Out);
+        Assert.Equal(d1 == d2 ? 2 : 3, agg.DailyTokens.Count);
+    }
+
+    [Fact]
+    public void Aggregate_makes_no_bucket_for_a_message_with_no_timestamp_or_no_tokens()
+    {
+        var lines = new[]
+        {
+            """{"sessionId":"s1","type":"assistant","message":{"usage":{"input_tokens":9,"output_tokens":1}}}""",
+            """{"sessionId":"s1","type":"assistant","timestamp":"2026-07-01T10:00:00Z","message":{"usage":{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":500}}}""",
+        };
+
+        var agg = Aggregate(lines)["s1"];
+
+        Assert.Empty(agg.DailyTokens);
+        Assert.Equal(9, agg.InputTokens);   // still counted in the flat totals
+    }
+
+    [Fact]
+    public void LocalDay_converts_a_UTC_timestamp_to_the_local_calendar_day()
+    {
+        const string Ts = "2026-07-01T22:30:00Z";
+        var expected = DateTimeOffset.Parse(Ts).ToLocalTime().ToString("yyyy-MM-dd");
+
+        Assert.Equal(expected, SessionAggregator.LocalDay(Ts));
+        Assert.Null(SessionAggregator.LocalDay("not a timestamp"));
+        Assert.Null(SessionAggregator.LocalDay(null));
+    }
+
+    [Fact]
     public void Aggregate_groups_lines_by_session_id()
     {
         var lines = new[]

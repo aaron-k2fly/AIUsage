@@ -79,6 +79,52 @@ public class SessionRepoTests
     }
 
     [Fact]
+    public void List_orders_by_last_activity_so_a_resumed_session_surfaces()
+    {
+        // Resuming a session (Live Code or `claude --resume`) leaves started_at at the original
+        // date — only ended_at moves. Ordering on started_at buried today's work down the list and
+        // made the Sessions page look like it hadn't picked the session up at all.
+        using var db = new TestDb();
+        SessionRepo.Upsert(db.Conn, new SessionAggregate
+        {
+            SessionId = "old-but-resumed",
+            FilePath = File1,
+            StartedAt = "2026-07-01T09:00:00Z",
+            EndedAt = "2026-07-28T16:00:00Z",   // resumed today
+        });
+        SessionRepo.Upsert(db.Conn, new SessionAggregate
+        {
+            SessionId = "started-later",
+            FilePath = File1,
+            StartedAt = "2026-07-20T09:00:00Z",
+            EndedAt = "2026-07-20T10:00:00Z",
+        });
+
+        var ids = SessionRepo.List(db.Conn, "all").Select(r => (string?)r["id"]).ToList();
+
+        Assert.Equal(["old-but-resumed", "started-later"], ids);
+    }
+
+    [Fact]
+    public void List_falls_back_to_started_at_when_a_session_has_no_end()
+    {
+        using var db = new TestDb();
+        SessionRepo.Upsert(db.Conn, new SessionAggregate
+        {
+            SessionId = "no-end", FilePath = File1, StartedAt = "2026-07-25T09:00:00Z",
+        });
+        SessionRepo.Upsert(db.Conn, new SessionAggregate
+        {
+            SessionId = "ended-earlier", FilePath = File1,
+            StartedAt = "2026-07-01T09:00:00Z", EndedAt = "2026-07-02T09:00:00Z",
+        });
+
+        var ids = SessionRepo.List(db.Conn, "all").Select(r => (string?)r["id"]).ToList();
+
+        Assert.Equal(["no-end", "ended-earlier"], ids);
+    }
+
+    [Fact]
     public void AddAutoLink_confirm_and_remove_transition_the_link_and_review_state()
     {
         using var db = new TestDb();

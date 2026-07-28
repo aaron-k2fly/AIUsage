@@ -9,7 +9,7 @@ public class MigrationsTests
     public void Run_stamps_the_current_schema_version()
     {
         using var db = new TestDb();
-        Assert.Equal(6, db.Scalar<int>("SELECT version FROM SchemaVersion"));
+        Assert.Equal(7, db.Scalar<int>("SELECT version FROM SchemaVersion"));
     }
 
     [Theory]
@@ -17,6 +17,7 @@ public class MigrationsTests
     [InlineData("Tickets")]
     [InlineData("SessionTicketLinks")]
     [InlineData("ToolUsage")]
+    [InlineData("SessionDailyTokens")]
     [InlineData("ManualEntries")]
     [InlineData("Settings")]
     [InlineData("ActivityCategories")]
@@ -48,7 +49,7 @@ public class MigrationsTests
         Migrations.Run(db.Conn);
         Migrations.Run(db.Conn);
 
-        Assert.Equal(6, db.Scalar<int>("SELECT version FROM SchemaVersion"));
+        Assert.Equal(7, db.Scalar<int>("SELECT version FROM SchemaVersion"));
         Assert.Equal(1, db.Scalar<long>("SELECT COUNT(*) FROM SchemaVersion"));
         Assert.Equal(7, db.Scalar<long>("SELECT COUNT(*) FROM ActivityCategories"));
     }
@@ -61,5 +62,26 @@ public class MigrationsTests
         var flag = db.Scalar<string>(
             "SELECT value FROM Settings WHERE key='toolusage_backfill_pending'");
         Assert.Null(flag);
+    }
+
+    [Fact]
+    public void Run_on_a_fresh_db_does_not_flag_a_dailytokens_backfill()
+    {
+        using var db = new TestDb();
+        Assert.Null(db.Scalar<string>(
+            "SELECT value FROM Settings WHERE key='dailytokens_backfill_pending'"));
+    }
+
+    [Fact]
+    public void Run_flags_a_dailytokens_backfill_when_upgrading_a_db_that_has_sessions()
+    {
+        using var db = new TestDb();
+        db.Exec("INSERT INTO Sessions(id, file_path) VALUES ('s1', '/f.jsonl')");
+        db.Exec("UPDATE SchemaVersion SET version = 6");   // pretend this DB predates v7
+
+        Migrations.Run(db.Conn);
+
+        Assert.Equal("1", db.Scalar<string>(
+            "SELECT value FROM Settings WHERE key='dailytokens_backfill_pending'"));
     }
 }

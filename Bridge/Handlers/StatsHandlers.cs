@@ -31,6 +31,37 @@ public static class StatsHandlers
         GROUP BY 1, 2
         """;
 
+    /// <summary>
+    /// Tokens per calendar week for the dashboard's "Token usage per week" line chart. Extracted as a
+    /// constant so the (fiddly) attribution rules are covered by tests.
+    /// </summary>
+    public const string TokensWeeklySql = """
+        WITH RECURSIVE spend(week, tokens) AS (
+            SELECT strftime('%Y-W%W', day), input_tokens + output_tokens
+            FROM SessionDailyTokens
+            UNION ALL
+            SELECT strftime('%Y-W%W', s.started_at), s.input_tokens + s.output_tokens
+            FROM Sessions s
+            WHERE s.started_at IS NOT NULL
+              AND NOT EXISTS (SELECT 1 FROM SessionDailyTokens d WHERE d.session_id = s.id)
+        ),
+        span(d, hi) AS (
+            SELECT MIN(x), MAX(x) FROM (
+                SELECT day AS x FROM SessionDailyTokens
+                UNION ALL
+                SELECT date(started_at) FROM Sessions WHERE started_at IS NOT NULL)
+            UNION ALL
+            SELECT date(d, '+1 day'), hi FROM span WHERE d < hi
+        )
+        SELECT w.week AS week, COALESCE(SUM(sp.tokens), 0) AS tokens
+        FROM (SELECT DISTINCT strftime('%Y-W%W', d) AS week FROM span) w
+        LEFT JOIN spend sp ON sp.week = w.week
+        -- On an empty DB the MIN/MAX base case is a single (NULL, NULL) row, which would otherwise
+        -- plot one null-labelled point; same guard covers an unparseable started_at.
+        WHERE w.week IS NOT NULL
+        GROUP BY w.week ORDER BY w.week
+        """;
+
     public static void Register(MessageRouter router)
     {
         router.Register("stats.dashboard", _ =>
@@ -85,13 +116,16 @@ public static class StatsHandlers
                     GROUP BY w ORDER BY w
                     """);
 
-                tokensWeekly = Rows.Query(conn, """
-                    SELECT strftime('%Y-W%W', started_at) AS week,
-                           SUM(input_tokens + output_tokens) AS tokens
-                    FROM Sessions
-                    WHERE started_at IS NOT NULL
-                    GROUP BY week ORDER BY week
-                    """);
+                // Tokens land in the week they were actually SPENT, from the per-day buckets — not in
+                // the week their session happened to start. A session running Sun→Fri used to dump
+                // its whole total on the start week (on real data that moved ~1.5M tokens out of one
+                // week and into its neighbour). Sessions with no buckets (transcripts older than the
+                // backfill horizon, so never day-split) fall back to the old start-week attribution
+                // via NOT EXISTS, which keeps the grand total identical instead of silently dropping
+                // that history. `span` is a day-by-day spine over the whole data range so weeks with
+                // no activity plot as a real zero — a line chart that just omits them implies a
+                // gradual slope between non-adjacent weeks.
+                tokensWeekly = Rows.Query(conn, TokensWeeklySql);
 
                 modelWeekly = Rows.Query(conn, """
                     SELECT strftime('%Y-W%W', started_at) AS week,

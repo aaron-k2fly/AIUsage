@@ -382,11 +382,13 @@ public static class LiveCodeHandlers
             var tabId = RequireTabId(payload);
             try { new TranscriptScanner().Run(); } catch { /* best-effort refresh */ }
 
+            // Rolling last 7 days, summed from the per-day buckets — NOT from Sessions grouped by
+            // started_at, which credited a multi-day session's whole spend to the week it began in
+            // (so the figure collapsed to near-zero every Monday while long sessions kept burning
+            // tokens). 7 days also matches the WEEK usage bar sitting beside this readout.
             long weekTokens;
             using (var conn = Db.Open())
-                weekTokens = Rows.Scalar(conn,
-                    "SELECT COALESCE(SUM(input_tokens + output_tokens), 0) FROM Sessions " +
-                    "WHERE strftime('%Y-%W', started_at) = strftime('%Y-%W', 'now')");
+                weekTokens = SessionDailyRepo.RollingTokens(conn, 7);
 
             LiveSession? entry;
             lock (Gate) Tabs.TryGetValue(tabId, out entry);

@@ -180,7 +180,7 @@ window.Views.livecode = (function () {
         <div class="lc-metrics">
           <div class="lc-metric"><div class="lc-metric-label">Plan</div>
             <div class="lc-metric-val">${App.esc(G.cfg.plan || '—')}</div></div>
-          <div class="lc-metric"><div class="lc-metric-label">Tokens — this week</div>
+          <div class="lc-metric" title="Input + output tokens over the last 7 days, counted on the day each was spent (cache excluded)"><div class="lc-metric-label">Tokens — last 7 days</div>
             <div class="lc-metric-val" id="lc-tok-week">—</div>
             <div class="lc-metric-sub">${G.cfg.usageResetsAt ? 'usage limits reset ' + App.esc(fmtResetDate(G.cfg.usageResetsAt)) : ''}</div></div>
           <div class="lc-usage" id="lc-usage"></div>

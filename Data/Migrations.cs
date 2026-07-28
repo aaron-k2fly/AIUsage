@@ -83,6 +83,20 @@ public static class Migrations
                 PRIMARY KEY (session_id, category, name)
             );
 
+            -- Per-session, per-LOCAL-day token spend (v7). Sessions.input_tokens/output_tokens are a
+            -- whole-session total attributed to started_at, which misreports any windowed figure for
+            -- the multi-day sessions Claude Code produces on resume. These buckets are additive in
+            -- exactly the same way, just keyed by the day each message was actually sent, so a rolling
+            -- "last 7 days" sum is exact. day is 'yyyy-MM-dd'; rows cascade-delete with their session.
+            CREATE TABLE IF NOT EXISTS SessionDailyTokens (
+                session_id TEXT NOT NULL REFERENCES Sessions(id) ON DELETE CASCADE,
+                file_path TEXT NOT NULL,
+                day TEXT NOT NULL,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (session_id, day)
+            );
+
             CREATE TABLE IF NOT EXISTS ManualEntries (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 ticket_key TEXT NOT NULL,
@@ -102,6 +116,7 @@ public static class Migrations
             CREATE INDEX IF NOT EXISTS idx_manual_ticket ON ManualEntries(ticket_key);
             CREATE INDEX IF NOT EXISTS idx_sessions_started ON Sessions(started_at);
             CREATE INDEX IF NOT EXISTS idx_toolusage_cat ON ToolUsage(category, name);
+            CREATE INDEX IF NOT EXISTS idx_dailytokens_day ON SessionDailyTokens(day);
             """;
         cmd.ExecuteNonQuery();
 
@@ -112,6 +127,12 @@ public static class Migrations
         if (oldVersion is > 0 and < 6 && HasSessions(conn))
             SetSetting(conn, "toolusage_backfill_pending", "1");
 
+        // Same story for SessionDailyTokens in v7: the incremental scanner only buckets lines it
+        // reads from here on, so already-scanned transcripts need one full re-parse to get their
+        // per-day rows.
+        if (oldVersion is > 0 and < 7 && HasSessions(conn))
+            SetSetting(conn, "dailytokens_backfill_pending", "1");
+
         AddColumnIfMissing(conn, "Sessions", "title_is_custom", "INTEGER NOT NULL DEFAULT 0");
         AddColumnIfMissing(conn, "Tickets", "project", "TEXT");
         AddColumnIfMissing(conn, "Tickets", "sprint", "TEXT");
@@ -120,7 +141,7 @@ public static class Migrations
         AddColumnIfMissing(conn, "Tickets", "description", "TEXT");
 
         Seed(conn);
-        SetVersion(conn, 6);
+        SetVersion(conn, 7);
     }
 
     /// <summary>Current stored schema version, or 0 if none recorded yet (fresh DB).</summary>
