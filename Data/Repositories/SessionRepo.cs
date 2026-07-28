@@ -221,7 +221,7 @@ public static class SessionRepo
                       FROM SessionTicketLinks l WHERE l.session_id = s.id) AS links
             FROM Sessions s
             {where}
-            ORDER BY s.started_at DESC
+            ORDER BY COALESCE(s.ended_at, s.started_at) DESC, s.started_at DESC
             """;
 
         var rows = new List<Dictionary<string, object?>>();

@@ -37,5 +37,13 @@ public sealed class TestDb : IDisposable
         return (T)Convert.ChangeType(v, typeof(T));
     }
 
+    /// <summary>Run arbitrary SQL, for tests that need to set up or perturb state directly.</summary>
+    public void Exec(string sql)
+    {
+        using var cmd = Conn.CreateCommand();
+        cmd.CommandText = sql;
+        cmd.ExecuteNonQuery();
+    }
+
     public void Dispose() => Conn.Dispose();
 }

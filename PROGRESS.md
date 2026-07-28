@@ -1,6 +1,110 @@
 # PROGRESS — AI Usage Tracker
 
-_Last updated: 2026-07-22_
+_Last updated: 2026-07-28_
+
+## 2026-07-28: Fix "Tokens — this week" — per-day token buckets (schema **v7**)
+
+**Bug (user-reported, with a screenshot):** the Live Code bottom panel read **820** tokens for the
+week while the active session alone showed 332.2k.
+
+**Root cause** — `livecode.metrics` summed `Sessions` grouped by the calendar week of `started_at`:
+
+```sql
+WHERE strftime('%Y-%W', started_at) = strftime('%Y-%W', 'now')
+```
+
+A Claude Code session routinely spans days (resume), so its whole token count was credited to the week
+it *began* in. Confirmed against the DB: on Tue 2026-07-28 exactly one session had `started_at` in ISO
+week 30 — Ore-gregator `6ccbaf8b`, 820 tokens, *literally* the number on screen. Everything actually
+being worked on (e.g. QSafety `0f4d85ab`, started Fri 24th, still running) counted **zero**. The tile
+therefore collapsed to near-zero every Monday and slowly recovered — and a Monday-based calendar bucket
+never matched the rolling 7-day WEEK usage bar sitting right beside it.
+
+**Fix (chosen over a one-line `ended_at >= now-7 days`, which would have dumped a session's entire
+history into the current week):** attribute tokens to the day they were *actually spent*.
+
+- **New `SessionDailyTokens` table** (migration **v7**): (`session_id`→Sessions CASCADE, `day`) PK +
+  `file_path`, `input_tokens`, `output_tokens`; indexed on `day`. `day` is the **local** `yyyy-MM-dd`.
+- **`SessionAggregate.DailyTokens`** — the scanner already parses every assistant message's
+  `timestamp` and `usage`, so bucketing is free: no extra file parse, no extra I/O. `LocalDay(ts)`
+  converts the ISO-8601-UTC stamp to the local day (queries use `date('now','localtime',…)`, so both
+  sides agree). Local, not UTC, because "this week" is read off a wall clock.
+- **`SessionDailyRepo`** — `Accumulate` (additive upsert, exactly mirroring `SessionRepo.Upsert`),
+  `DeleteForFile` (beside `ResetCountersForFile` on a shrink/rewrite reparse), `ReplaceForFile`
+  (backfill), `RollingTokens(conn, days)`.
+- **`dailytokens_backfill_pending`** (v7 flag) → `BackfillDailyTokens`: one full re-parse of every
+  transcript with **replace** semantics, so it's safe over files the same scan already accumulated and
+  idempotent if interrupted.
+- `weekTokens` is now `RollingTokens(conn, 7)`; the tile is relabelled **"Tokens — last 7 days"** with
+  a tooltip, matching the WEEK bar beside it.
+
+**Verified against the real DB** (122 sessions): migration stamped v7, backfill populated 129 buckets
+over 92 sessions then cleared its flag. Reconciliation — for **all 92** sessions the per-day buckets sum
+**exactly** to the flat `input_tokens + output_tokens` (17,765,082 both sides, **0** mismatches), and
+they still reconcile after two further incremental scans, so the additive path neither drifts nor
+double-counts. The screenshot's QSafety session now splits correctly across `07-24` / `07-27` / `07-28`
+instead of landing entirely on the 24th. Tile value: **820 → 2,240,942**. `dotnet test AIUsage.Tests` →
+**77 passed / 0 failed** (13 new: bucketing, `LocalDay`, window edges, a session begun before the
+window, additive/replace semantics, FK cascade, orphan guard, v7 stamp + flag). Root `dotnet build`
+clean. Docs synced (CLAUDE.md, `.claude/STRUCTURE.md`).
+
+**Known scope limit:** `modelWeekly` / `tokensThisMonth` still bucket by `started_at` and have the same
+skew (`tokensWeekly` was fixed the same day — see below). `modelWeekly` counts *sessions* per model, so
+start-week attribution is defensible; `tokensThisMonth` has the same flaw as the old week tile and is
+the obvious next candidate.
+
+## 2026-07-28: Dashboard weekly-token chart + Sessions list recency (both user-reported)
+
+Two follow-ups after the tile fix, both verified against the live DB.
+
+### 1. "Token usage per week" chart was mis-attributing whole sessions
+
+Same root cause as the tile: `tokensWeekly` grouped `Sessions` by `strftime('%Y-W%W', started_at)`, so a
+session running Sun→Fri dumped its entire spend on the week it *started*. Measured on real data:
+
+| week | chart showed | actually spent | error |
+|---|---|---|---|
+| W27 | 6,202,642 | 4,677,794 | **−1,524,848** |
+| W28 | 4,364,738 | 5,540,021 | **+1,175,283** |
+| W30 | 99,976 | 445,844 | +345,868 |
+
+~1.5M tokens (a quarter of the week) were plotted on the wrong week.
+
+**Fix** — `StatsHandlers.TokensWeeklySql`, extracted to a const so it's unit-testable:
+- Tokens come from `SessionDailyTokens`, i.e. the week they were **spent**.
+- Sessions with **no** buckets (transcripts older than the backfill horizon) fall back to their
+  `started_at` week via `NOT EXISTS` — so nothing is double-counted and the grand total is unchanged
+  (**18,644,944 before and after**, just redistributed).
+- A recursive **day spine** over the data range zero-fills quiet weeks. Previously only weeks *with*
+  data got labels, so a gap week was omitted entirely and the line chart drew a smooth slope between
+  non-adjacent weeks — reading as a gradual decline rather than "nothing happened".
+- `WHERE w.week IS NOT NULL` — a unit test caught that on an **empty DB** the spine's `MIN/MAX` base
+  case returns one `(NULL, NULL)` row, which plotted a junk null-labelled point.
+
+### 2. Resumed sessions looked "not updated" in the Sessions menu
+
+Not a scan problem — the data was current. `SessionRepo.List` ordered by `started_at DESC` and the table
+showed only a **"Started"** column. Resuming a session leaves `started_at` at the *original* date and
+only moves `ended_at`, so a session resumed and worked on today stayed buried at its old position
+showing its old date. `ended_at` was already stored and already returned by `List` — just never
+displayed or sorted on.
+
+- `SessionRepo.List` → `ORDER BY COALESCE(ended_at, started_at) DESC, started_at DESC`.
+- Sessions table gains a **"Last activity"** column (Started kept, also in its tooltip); footnote
+  explains the sort.
+- Excel export (`export.sessions`) gains the same column — it had the identical blind spot.
+
+Real-data effect: `772ae79c` and `0f4d85ab` (started 24 Jul, both active *today*) now sort above
+`6ccbaf8b` (started 27 Jul, idle since) instead of below it.
+
+**Note, not changed:** `livecode.resumeSession` (the Resume Sessions picker) passes `ticketKey: null` and
+never calls `LinkLiveCodeSession`, so a session resumed that way gets no ticket link from Live Code —
+only whatever the scanner infers from branch/cwd/prompt. That's arguably correct (you picked a past
+session, not a ticket), so it was left alone; flagging it in case the intent was otherwise.
+
+Verified: `dotnet test AIUsage.Tests` → **85 passed / 0 failed** (8 new: week-spanning split, no-bucket
+fallback, no double-count, zero-fill, total preservation, empty DB, plus two list-ordering tests).
+`dotnet build` clean; `sessions.js` / `dashboard.js` `node --check` clean. Docs synced.
 
 ## 2026-07-22: First unit tests — `AIUsage.Tests` (xUnit) — branch `AIUSAGE-UNIT-TEST`
 

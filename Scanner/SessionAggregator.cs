@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 
 namespace AIUsage.Scanner;
@@ -20,6 +21,19 @@ public sealed class SessionAggregate
     public long InputTokens, OutputTokens, CacheCreationTokens, CacheReadTokens;
     public int EditCount, WriteCount, ReadCount, BashCount, OtherToolCount, UserMessageCount;
     public string? CcVersion;
+    /// <summary>
+    /// Local calendar day (<c>yyyy-MM-dd</c>) → tokens spent on that day, additive like the flat
+    /// counters above. A Claude Code session routinely spans days (resume), so attributing its whole
+    /// token count to <c>started_at</c> misreports any "today"/"this week" figure; these buckets put
+    /// the tokens on the day they were actually spent.
+    /// </summary>
+    public Dictionary<string, (long In, long Out)> DailyTokens { get; } = [];
+
+    public void AddDaily(string day, long input, long output)
+    {
+        var cur = DailyTokens.GetValueOrDefault(day);
+        DailyTokens[day] = (cur.In + input, cur.Out + output);
+    }
     /// <summary>key → inferred_from (branch|cwd|prompt_text), highest-priority source wins.</summary>
     public Dictionary<string, string> TicketKeys { get; } = [];
 }
@@ -72,8 +86,10 @@ public sealed class SessionAggregator(TicketKeyInferrer inferrer)
         if (!sessions.TryGetValue(sessionId, out var agg))
             sessions[sessionId] = agg = new SessionAggregate { SessionId = sessionId, FilePath = filePath };
 
+        string? timestamp = null;
         if (TryGetString(root, "timestamp", out var ts))
         {
+            timestamp = ts;
             if (agg.StartedAt is null || string.CompareOrdinal(ts, agg.StartedAt) < 0) agg.StartedAt = ts;
             if (agg.EndedAt is null || string.CompareOrdinal(ts, agg.EndedAt) > 0) agg.EndedAt = ts;
         }
@@ -84,7 +100,7 @@ public sealed class SessionAggregator(TicketKeyInferrer inferrer)
         if (!TryGetString(root, "type", out var type)) return;
         switch (type)
         {
-            case "assistant": ParseAssistant(root, agg); break;
+            case "assistant": ParseAssistant(root, agg, timestamp); break;
             case "user": ParseUser(root, agg); break;
             case "ai-title":
                 if (!agg.TitleIsCustom && TryGetString(root, "aiTitle", out var aiTitle))
@@ -100,7 +116,7 @@ public sealed class SessionAggregator(TicketKeyInferrer inferrer)
         }
     }
 
-    private static void ParseAssistant(JsonElement root, SessionAggregate agg)
+    private static void ParseAssistant(JsonElement root, SessionAggregate agg, string? timestamp)
     {
         if (!root.TryGetProperty("message", out var msg) || msg.ValueKind != JsonValueKind.Object) return;
 
@@ -108,10 +124,15 @@ public sealed class SessionAggregator(TicketKeyInferrer inferrer)
 
         if (msg.TryGetProperty("usage", out var usage) && usage.ValueKind == JsonValueKind.Object)
         {
-            agg.InputTokens += GetLong(usage, "input_tokens");
-            agg.OutputTokens += GetLong(usage, "output_tokens");
+            var input = GetLong(usage, "input_tokens");
+            var output = GetLong(usage, "output_tokens");
+            agg.InputTokens += input;
+            agg.OutputTokens += output;
             agg.CacheCreationTokens += GetLong(usage, "cache_creation_input_tokens");
             agg.CacheReadTokens += GetLong(usage, "cache_read_input_tokens");
+            // Same in+out figure as the flat counters, bucketed by the message's own day.
+            if ((input != 0 || output != 0) && LocalDay(timestamp) is { } day)
+                agg.AddDaily(day, input, output);
         }
 
         if (msg.TryGetProperty("content", out var content) && content.ValueKind == JsonValueKind.Array)
@@ -555,4 +576,16 @@ public sealed class SessionAggregator(TicketKeyInferrer inferrer)
 
     private static long GetLong(JsonElement el, string name) =>
         el.TryGetProperty(name, out var p) && p.ValueKind == JsonValueKind.Number ? p.GetInt64() : 0;
+
+    /// <summary>
+    /// The LOCAL calendar day (<c>yyyy-MM-dd</c>) of a transcript timestamp — transcripts stamp
+    /// ISO-8601 UTC, but "today"/"this week" are read off a wall clock, so the daily buckets and the
+    /// queries over them (<c>date('now','localtime',…)</c>) both work in local time. Null if
+    /// unparseable; an offset-less timestamp is assumed UTC.
+    /// </summary>
+    public static string? LocalDay(string? timestamp) =>
+        DateTimeOffset.TryParse(timestamp, CultureInfo.InvariantCulture,
+            DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var when)
+            ? when.ToLocalTime().ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)
+            : null;
 }

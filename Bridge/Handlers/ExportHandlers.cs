@@ -33,13 +33,13 @@ public static class ExportHandlers
                 var data = SessionRepo.List(conn, "all");
                 var headers = new List<string>
                 {
-                    "Session", "Started", "Model", "Input tokens", "Output tokens",
+                    "Session", "Started", "Last activity", "Model", "Input tokens", "Output tokens",
                     "Edits", "Reads", "Shell", "Other tools", "User messages",
                     "Review state", "Project", "Tickets"
                 };
                 var rows = data.Select(d => (IReadOnlyList<object?>)new object?[]
                 {
-                    Get(d, "title"), Get(d, "startedAt"), Model(d),
+                    Get(d, "title"), Get(d, "startedAt"), Get(d, "endedAt"), Model(d),
                     Get(d, "inputTokens"), Get(d, "outputTokens"),
                     Lng(d, "editCount") + Lng(d, "writeCount"), Get(d, "readCount"), Get(d, "bashCount"), Get(d, "otherToolCount"),
                     Get(d, "userMessageCount"), Get(d, "reviewState"), Get(d, "projectDir"), Links(d)
