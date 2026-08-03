@@ -1,6 +1,37 @@
 # PROGRESS — AI Usage Tracker
 
-_Last updated: 2026-07-28_
+_Last updated: 2026-08-03_
+
+## 2026-08-03: Dashboard — "Non-ticket sessions" chart (user request)
+
+A new horizontal bar chart on the dashboard, sitting **between "Top tickets" and "Ticket type × AI
+activity"**, showing the token spend that never got attributed to a ticket. It's the deliberate
+counterpart to Top tickets: what the tokens went to when a ticket was known, and *where* they went
+when one wasn't.
+
+- **Bars are project folders, not sessions** (chosen with the user over per-session bars): the useful
+  question is which repos generate untracked AI work, and folder totals stay stable as sessions come
+  and go. Own **tokens / sessions** toggle, mirroring Top tickets (`setNonTicketMetric`).
+- **`StatsHandlers.NonTicketProjectsSql`** — extracted as a public const so it's unit-testable, like
+  `TokensWeeklySql`. Non-ticket means **no `SessionTicketLinks` row at all** (auto / manual / confirmed
+  / livecode alike), so the chart shrinks as work gets linked. Top 10 by tokens.
+- **Grouped case-insensitively** (`GROUP BY lower(...)`, `MIN()` picks the displayed spelling). Real
+  data proved this out: the live DB had both `C:\Projects\…\Safety.Spa` and `c:\Projects\…\Safety.Spa`
+  — transcripts record the cwd as the shell reported it — which would have drawn two bars with an
+  identical axis label. NULL/empty `project_dir` → `(unknown folder)` rather than being dropped.
+- Frontend (`dashboard.js`): `AMBER` instead of the Top-tickets blue so the two stacked panels don't
+  read as one continuous series; axis labels are the last two path segments (`projectLabel`, matching
+  how the Sessions list names a project) with the **full path in the tooltip**. Non-ticket rows now
+  also count towards `hasData`, so a DB with scanned sessions but no links yet renders the charts
+  instead of showing "No data yet" — which is exactly when this chart is the one worth looking at.
+
+Verified: the query against the live DB returns 10 folders (top: `C:\Projects\AIUsage`, 10 sessions,
+4.83M tokens). `dotnet test AIUsage.Tests` → **91 passed / 0 failed** (6 new, in
+`NonTicketProjectsTests.cs`: folder summing, exclusion by any link source, case-insensitive merge,
+top-10 ordering + cut, `(unknown folder)`, empty DB). Root `dotnet build` clean, 0 warnings. Docs
+synced (CLAUDE.md, `.claude/STRUCTURE.md` — the tests table there was also missing
+`TokensWeeklyTests` / `SessionDailyRepoTests`; added). **Not yet eyeballed in the running app** — the
+chart's rendering is unverified visually.
 
 ## 2026-07-28: Fix "Tokens — this week" — per-day token buckets (schema **v7**)
 

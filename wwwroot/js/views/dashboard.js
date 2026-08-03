@@ -13,6 +13,9 @@ window.Views.dashboard = (function () {
     'Uncategorised':  '#c3c2b7'
   };
   const BLUE = '#2a78d6';
+  // Unattributed (non-ticket) spend gets its own hue from the same validated set, so it never
+  // reads as a continuation of the blue "Top tickets" bars right above it.
+  const AMBER = '#eda100';
   const GRID = '#e1e0d9';
   const INK_MUTED = '#898781';
   const SURFACE = '#ffffff';
@@ -24,6 +27,7 @@ window.Views.dashboard = (function () {
 
   let charts = [];
   let topMetric = 'tokens';
+  let nonTicketMetric = 'tokens';
   let lastStats = null;
 
   function destroyCharts() {
@@ -40,6 +44,13 @@ window.Views.dashboard = (function () {
     const el = document.getElementById(id);
     if (!el) return;
     charts.push(new Chart(el, config));
+  }
+
+  // Last two path segments of a project dir, matching how the Sessions list names a project.
+  function projectLabel(dir) {
+    if (!dir) return '(unknown folder)';
+    const parts = dir.split(/[\\/]/).filter(Boolean);
+    return parts.slice(-2).join('/') || dir;
   }
 
   function tile(label, value, sub) {
@@ -78,7 +89,10 @@ window.Views.dashboard = (function () {
       return;
     }
 
-    const hasData = s.weekly.length || s.activity.length;
+    const nonTicket = s.nonTicketProjects || [];
+    // Non-ticket sessions count as data: a DB where nothing is linked yet has no weekly/activity
+    // rows at all, and that's precisely when this chart is the thing worth looking at.
+    const hasData = s.weekly.length || s.activity.length || nonTicket.length;
     const ext = extOf(s);
     const hasExt = ext.agent.length || ext.skill.length || ext.mcp.length || ext.hook.length;
 
@@ -109,6 +123,15 @@ window.Views.dashboard = (function () {
           </span></h2>
           <div class="chart-box"><canvas id="ch-top"></canvas></div>
           <div class="footnote">Multi-ticket sessions count fully against each linked ticket.</div></div>
+        <div class="panel"><h2>Non-ticket sessions
+          <span style="float:right">
+            <button class="btn btn-small ${nonTicketMetric === 'tokens' ? 'active btn-primary' : ''}" onclick="Views.dashboard.setNonTicketMetric('tokens')">tokens</button>
+            <button class="btn btn-small ${nonTicketMetric === 'sessions' ? 'active btn-primary' : ''}" onclick="Views.dashboard.setNonTicketMetric('sessions')">sessions</button>
+          </span></h2>
+          ${nonTicket.length
+            ? '<div class="chart-box"><canvas id="ch-nonticket"></canvas></div>'
+            : '<div class="empty" style="padding:34px 0">Every session is linked to a ticket.</div>'}
+          <div class="footnote">Sessions with no ticket link, by project folder. Top 10 by tokens.</div></div>
         <div class="panel"><h2>Ticket type × AI activity</h2>
           <div class="chart-box"><canvas id="ch-matrix"></canvas></div>
           <div class="footnote">Issue types appear after tickets are synced from JIRA.</div></div>
@@ -280,6 +303,41 @@ window.Views.dashboard = (function () {
       }
     });
 
+    // Non-ticket spend per project folder. Same shape as "Top tickets" so the two read as a pair:
+    // what the tokens went to when a ticket was known, and where they went when one wasn't.
+    const nonTicket = s.nonTicketProjects || [];
+    const ntMetric = nonTicketMetric;
+    if (nonTicket.length) makeChart('ch-nonticket', {
+      type: 'bar',
+      data: {
+        labels: nonTicket.map(p => projectLabel(p.project)),
+        datasets: [{
+          data: nonTicket.map(p => p[ntMetric]),
+          backgroundColor: AMBER,
+          borderRadius: 4,
+          maxBarThickness: 18
+        }]
+      },
+      options: {
+        indexAxis: 'y',
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              // Full path in the tooltip — the axis label is shortened to the last two segments.
+              title: ctx => nonTicket[ctx[0].dataIndex].project,
+              label: ctx => `${ntMetric}: ${App.fmtNum(ctx.raw)}`
+            }
+          }
+        },
+        scales: {
+          x: { grid: { color: GRID }, border: { display: false }, ticks: { color: INK_MUTED, precision: 0, callback: v => App.fmtNum(v) } },
+          y: { grid: { display: false }, ticks: { color: INK_MUTED } }
+        }
+      }
+    });
+
     const types = [...new Set(s.typeMatrix.map(r => r.issueType))];
     const cats = [...new Set(s.typeMatrix.map(r => r.category))];
     makeChart('ch-matrix', {
@@ -312,6 +370,10 @@ window.Views.dashboard = (function () {
     render: load,
     setMetric(m) {
       topMetric = m;
+      App.refresh();
+    },
+    setNonTicketMetric(m) {
+      nonTicketMetric = m;
       App.refresh();
     }
   };

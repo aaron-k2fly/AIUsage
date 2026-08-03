@@ -62,11 +62,32 @@ public static class StatsHandlers
         GROUP BY w.week ORDER BY w.week
         """;
 
+    /// <summary>
+    /// The dashboard's "Non-ticket sessions" bar chart: spend that never got attributed to a
+    /// ticket, grouped by the project folder it happened in. A session counts as non-ticket when
+    /// it has no <c>SessionTicketLinks</c> row at all — auto-inferred, manual and confirmed links
+    /// alike — so the chart shrinks as work gets linked. Extracted as a constant so it's testable.
+    /// </summary>
+    public const string NonTicketProjectsSql = """
+        SELECT MIN(COALESCE(NULLIF(s.project_dir, ''), '(unknown folder)')) AS project,
+               COUNT(*) AS sessions,
+               COALESCE(SUM(s.input_tokens + s.output_tokens), 0) AS tokens
+        FROM Sessions s
+        WHERE NOT EXISTS (SELECT 1 FROM SessionTicketLinks l WHERE l.session_id = s.id)
+        -- Grouped case-insensitively: transcripts record the cwd as the shell reported it, so the
+        -- same Windows folder shows up as both "C:\..." and "c:\..." and would otherwise draw two
+        -- bars with an identical label. MIN() picks one spelling to display.
+        GROUP BY lower(COALESCE(NULLIF(s.project_dir, ''), '(unknown folder)'))
+        ORDER BY tokens DESC, project
+        LIMIT 10
+        """;
+
     public static void Register(MessageRouter router)
     {
         router.Register("stats.dashboard", _ =>
         {
             object tiles, weekly, tokensWeekly, modelWeekly, activity, topTickets, typeMatrix;
+            object nonTicketProjects;
             object agentUsage, skillUsage, mcpUsage, hookUsage;
 
             using (var conn = Db.Open())
@@ -154,6 +175,8 @@ public static class StatsHandlers
                     LIMIT 10
                     """);
 
+                nonTicketProjects = Rows.Query(conn, NonTicketProjectsSql);
+
                 typeMatrix = Rows.Query(conn, $"""
                     SELECT COALESCE(t.issue_type, 'Unknown') AS issueType, u.act AS category, SUM(u.c) AS count
                     FROM ({ActivityUnion}) u
@@ -165,7 +188,7 @@ public static class StatsHandlers
 
             return Task.FromResult<object?>(new
             {
-                tiles, weekly, tokensWeekly, modelWeekly, activity, topTickets, typeMatrix,
+                tiles, weekly, tokensWeekly, modelWeekly, activity, topTickets, nonTicketProjects, typeMatrix,
                 agentUsage, skillUsage, mcpUsage, hookUsage
             });
         });
