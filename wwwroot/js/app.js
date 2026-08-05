@@ -122,6 +122,17 @@
   }
   scanBtn.addEventListener('click', () => runScan(false));
 
+  // --- version footer (bottom-left) ---
+  async function loadVersion() {
+    const el = document.getElementById('app-version');
+    if (!el) return;
+    try {
+      const r = await Bridge.call('app.info', {}, 5000);
+      el.textContent = r.short;
+      el.title = r.detail;
+    } catch { /* leave blank — not worth a toast */ }
+  }
+
   // --- Live Code session indicator (sidebar dot: green = ≥1 session running, red = none) ---
   let lastSessionList = [];
   async function updateLiveDot() {
@@ -180,6 +191,7 @@
     .then(() => {
       navigate();
       runScan(true);
+      loadVersion();
       setupNavPopover();
       updateLiveDot();
       setInterval(updateLiveDot, 3000);
