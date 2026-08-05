@@ -1,6 +1,40 @@
 # PROGRESS — AI Usage Tracker
 
-_Last updated: 2026-08-03_
+_Last updated: 2026-08-05_
+
+## 2026-08-05: App versioning + MIT license (user request)
+
+**Versioning.** `AIUsage.csproj` now carries `<Version>1.0.0</Version>` as the single semver
+source of truth, plus a `SetGitCommitHash` MSBuild target (`git rev-parse --short=7 HEAD`,
+best-effort) that sets `SourceRevisionId` — the SDK appends this as `+<hash>` onto
+`AssemblyInformationalVersion` automatically (confirmed this needs no SourceLink package: the
+`AddSourceRevisionToInformationalVersion` target in `Microsoft.NET.GenerateAssemblyInfo.targets`
+is gated only on `SourceControlInformationFeatureSupported`, which the base SDK sets to `true`
+unconditionally). An `AssemblyMetadata` item stamps the UTC build date the same way. New
+`Platform/AppVersion.cs` reads both back once from the assembly's attributes and exposes
+`Semver`/`Commit`/`BuildDate`/`Short` (`"v1.0.0 · 7c7e4f5"`, degrades to `"v1.0.0"` without a
+commit)/`Detail` (tooltip text); `Parse(string?)` is public so the split logic is unit-tested
+(`AppVersionTests.cs`) without needing a real stamped assembly. New bridge action `app.info`
+(`Bridge/Handlers/AppHandlers.cs`) and CLI verb `--version` both read from it — nothing else
+derives a version independently. The sidebar footer (`#app-version`, below the scan status)
+shows the short form on startup (`app.js` → `loadVersion()`) with the detail as its tooltip;
+failures leave it blank rather than toasting (not worth interrupting anyone over a version
+string). Verified via `dotnet run -- --version` → `AI Usage Tracker 1.0.0 / commit 7c7e4f5 /
+built 2026-08-05`; couldn't screenshot the sidebar myself (screen-capture policy), so visual
+confirmation of the footer placement is still pending from the user.
+
+**License.** Checked every dependency (Photino.NET, SQLitePCLRaw = Apache-2.0; Porta.Pty,
+Microsoft.Data.Sqlite, System.Security.Cryptography.ProtectedData = MIT; vendored Chart.js +
+xterm.js + xterm-addon-fit.js + xterm.css = MIT) — all permissive, nothing copyleft, so MIT was
+free to choose. Added `LICENSE` (MIT, copyright Aaron Brata Aditama) and
+`THIRD-PARTY-NOTICES.md` (the table above + both full license texts — `xterm.js` and
+`xterm-addon-fit.js` ship with no embedded copyright header, so this file is the only place that
+attribution lives). README gained a short License section linking both files.
+
+**Re-published**: `dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -p:DebugType=none -p:DebugSymbols=false` →
+`C:\Projects\AIUsage\bin\Release\net10.0\win-x64\publish\AIUsage.exe` (~40 MB, one file). Confirmed
+`AIUsage.exe --version` reports `AI Usage Tracker 1.0.0 / commit 7c7e4f5 / built 2026-08-05` — the
+git-commit stamping works in the Release config too, not just Debug.
 
 ## 2026-08-03: Dashboard — "Non-ticket sessions" chart (user request)
 

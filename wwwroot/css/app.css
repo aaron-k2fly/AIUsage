@@ -48,6 +48,7 @@ body {
 #sidebar a.active { background: var(--accent); color: #fff; }
 .sidebar-footer { margin-top: auto; padding: 12px 18px; }
 .sidebar-footer .muted { margin-top: 8px; font-size: 12px; color: #8a92a5; }
+#app-version { font-size: 11px; color: #7b8395; cursor: default; }
 
 /* min-width:0 defeats the flexbox min-content floor so wide grids (e.g. the session
    detail's 2-column layout) shrink to the available width instead of overflowing right. */

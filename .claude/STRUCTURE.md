@@ -15,13 +15,15 @@ settings keys.
 
 ```
 AIUsage/
-├── AIUsage.csproj            # net10.0 WinExe; embeds wwwroot + appicon; NuGet refs
+├── AIUsage.csproj            # net10.0 WinExe; embeds wwwroot + appicon; NuGet refs; <Version> + git-commit/build-date stamping
 ├── Program.cs                # entry point, window setup, handler registration, CLI verbs
 ├── WebAssets.cs              # embedded-resource extraction (web assets + icon)
 ├── CLAUDE.md                 # architecture & conventions (read first)
 ├── PROGRESS.md               # feature history / decisions / first-run checklist
 ├── PLAN-AI-USAGE-TRACKER.md  # original implementation plan
 ├── REVIEW-AI-USAGE.md        # plan review notes
+├── LICENSE                   # MIT
+├── THIRD-PARTY-NOTICES.md    # vendored JS + NuGet dep licenses
 ├── .claude/
 │   ├── STRUCTURE.md          # this file
 │   └── settings.local.json   # Claude Code local settings
@@ -34,7 +36,8 @@ AIUsage/
 │       ├── SettingsHandlers.cs
 │       ├── StatsHandlers.cs
 │       ├── ExportHandlers.cs
-│       └── LiveCodeHandlers.cs   # Live Code page: tickets, folder, agents, terminal, metrics
+│       ├── LiveCodeHandlers.cs   # Live Code page: tickets, folder, agents, terminal, metrics
+│       └── AppHandlers.cs        # app.info (version/commit/build date for the UI footer)
 ├── Scanner/
 │   ├── TranscriptScanner.cs  # incremental JSONL walk, offset/WAL bookkeeping
 │   ├── SessionAggregator.cs  # SOLE owner of the transcript schema; aggregates + ReadLive/ContextWindow/ReadDetail
@@ -49,7 +52,10 @@ AIUsage/
 │   ├── GitWorktree.cs        # git-worktree isolation: IsGitRepo / Create / TryRemoveIfClean
 │   └── PromptWatcher.cs      # best-effort auto-approve: detects prompts, injects Enter
 ├── Platform/
-│   └── FolderDialog.cs       # UI-thread-marshalled Photino folder picker (+ manual fallback)
+│   ├── FolderDialog.cs       # UI-thread-marshalled Photino folder picker (+ manual fallback)
+│   ├── ClaudeAccount.cs      # subscription plan + usage-reset date from ~/.claude.json
+│   ├── ClaudeUsage.cs        # rolling usage-limit bars (Anthropic oauth/usage endpoint)
+│   └── AppVersion.cs         # reads this assembly's stamped semver/commit/build-date
 ├── Data/
 │   ├── Db.cs                 # connection open (WAL+FK), portable-first DB path
 │   ├── Migrations.cs         # idempotent schema, seeds, SchemaVersion (v6)
@@ -80,7 +86,8 @@ AIUsage/
 │   ├── SessionDailyRepoTests.cs
 │   ├── TokensWeeklyTests.cs      # StatsHandlers.TokensWeeklySql
 │   ├── NonTicketProjectsTests.cs # StatsHandlers.NonTicketProjectsSql
-│   └── DataRepoTests.cs      # Ticket + ManualEntry repo round-trips
+│   ├── DataRepoTests.cs      # Ticket + ManualEntry repo round-trips
+│   └── AppVersionTests.cs    # AppVersion.Parse + stamped-assembly sanity check
 └── wwwroot/                  # frontend (embedded into the exe at build time)
     ├── index.html            # shell: sidebar nav + <main id="content"> + script tags
     ├── css/app.css
@@ -107,7 +114,9 @@ AIUsage/
 
 | File | Responsibility |
 |---|---|
-| `Program.cs` | `[STAThread] Main`: `Db.Initialize()`, parse args (`--route` opens the window on a page; anything else → `RunCli`), build the `PhotinoWindow` (1280×860 restore size, maximized, DevTools on), set icon via `WebAssets.ExtractIcon`, register all handler groups (incl. `LiveCodeHandlers.Register(router, window)`), load `index.html` from the extracted web dir over `file://`. `RunCli` implements `--scan`, `--sql` (read-only), `--set`, `--pty-test` (ConPTY streaming smoke test), `--envtest` (API-key strip check), `--shelltest` (print resolved shells), `--accounttest` (print plan + usage reset), `--detailtest <sessionId>` (print the session-detail deep re-parse — per-tool/per-model/timing — as fed to the detail page). `--route` accepts a `page/<param>` form (e.g. `session/<id>`). |
+| `Program.cs` | `[STAThread] Main`: `Db.Initialize()`, parse args (`--route` opens the window on a page; anything else → `RunCli`), build the `PhotinoWindow` (1280×860 restore size, maximized, DevTools on), set icon via `WebAssets.ExtractIcon`, register all handler groups (incl. `LiveCodeHandlers.Register(router, window)`), load `index.html` from the extracted web dir over `file://`. `RunCli` implements `--scan`, `--sql` (read-only), `--set`, `--pty-test` (ConPTY streaming smoke test), `--envtest` (API-key strip check), `--shelltest` (print resolved shells), `--accounttest` (print plan + usage reset), `--detailtest <sessionId>` (print the session-detail deep re-parse — per-tool/per-model/timing — as fed to the detail page), `--version` (print the stamped semver + commit + build date). `--route` accepts a `page/<param>` form (e.g. `session/<id>`). |
+| `Bridge/Handlers/AppHandlers.cs` | Action `app.info` → `{version, commit, buildDate, short, detail}` from `Platform.AppVersion`, read by the sidebar footer on startup. |
+| `Platform/AppVersion.cs` | Static class read once from this assembly's attributes: `Semver`/`Commit`/`BuildDate` (parsed from `AssemblyInformationalVersionAttribute` + the `BuildDate` `AssemblyMetadataAttribute`, both stamped by `AIUsage.csproj`), `Short` ("v1.0.0 · 7c7e4f5", degrades to "v1.0.0" without a commit), `Detail` (multi-line tooltip). `Parse(string?)` is public so the split logic is unit-testable without a real stamped assembly. All best-effort — a build outside a git checkout just omits the commit. |
 | `WebAssets.cs` | `EnsureExtracted()` copies embedded `web/**` resources to `%LOCALAPPDATA%\AIUsage\web` (overwrites each launch) and returns the path; dev fallback to on-disk `wwwroot`. `ExtractIcon()` writes the embedded `appicon.ico` to `%LOCALAPPDATA%\AIUsage`. |
 | `Bridge/MessageRouter.cs` | Owns the handler dictionary and JSON (camelCase) (de)serialization. `OnMessage` parses `{id,action,payload}` on a `Task.Run` pool thread, dispatches, replies `{id,ok,data|error}`. `PushEvent(event, data)` sends unsolicited `{type:"event",…}` messages (streaming channel). Registers built-in `ping`. |
 | `Bridge/Handlers/SessionHandlers.cs` | Actions `scan.run`, `sessions.list/detail/assignTicket/confirmLink/removeLink/dismiss/reopen`. `sessions.detail {sessionId}` loads the stored row (`SessionRepo.Get`) + does an on-demand deep re-parse of that one transcript (`SessionAggregator.ReadDetail`) for the exact per-tool/per-model/timing breakdown, folds in `SubagentTokens`, derives the activity category (link category, else edit-vs-read guess — matching the dashboard), builds the `agents`/`skills`/`hooks` lists and an `mcps` list (grouped `{server,tool,count}` parsed from the `mcp__server__tool` tool names), and returns everything the detail page renders (falls back to stored counters if the transcript file is gone → `transcriptAvailable:false`). Validates ticket keys (`^[A-Z][A-Z0-9]{1,9}-\d{1,6}$`, uppercased). Documents the `Task.Run` null-unwrap → canceled-task trap (see CLAUDE.md). |
@@ -152,9 +161,9 @@ AIUsage/
 
 | File | Responsibility |
 |---|---|
-| `index.html` | Shell: `#sidebar` nav links (`data-route`), `<main id="content">`, `#toast`, "Scan now" button + status, script tags. |
+| `index.html` | Shell: `#sidebar` nav links (`data-route`), `<main id="content">`, `#toast`, "Scan now" button + status + `#app-version` (bottom-left), script tags. |
 | `js/bridge.js` | `Bridge.call(action, payload, timeoutMs=120000)` → Promise over `window.external.sendMessage/receiveMessage`; correlates by `crypto.randomUUID()` id; `timeoutMs:0` disables the timeout. `Bridge.on(event, handler)` subscribes to server-pushed `{type:"event"}` messages (returns an unsubscribe fn). |
-| `js/app.js` | Hash router (`navigate()` on `hashchange`, wipes `#content` and calls the view's `render(container, param)`; the hash may carry a `/param` — `#session/<id>` → route `session`, param `<id>` — and the `session` route keeps the "Sessions" nav item highlighted), `window.App` helpers (`toast`, `esc`, `fmtNum`, `fmtDate`, `refresh`, `exportExcel`, `confirm` [promise modal], `choose` [multi-button promise modal → chosen key]), the scan button + startup ping-then-scan, and a global 3s poll of `livecode.running` that colours the sidebar "Live Code" dot (green = `count>0`, red = none). `setupNavPopover()` shows a hover panel over the Live Code nav item listing live tabs (`livecode.list`); clicking a row calls `Views.livecode.focusTab(tabId)`. Background (auto) scan only re-renders the dashboard so form state elsewhere survives. |
+| `js/app.js` | Hash router (`navigate()` on `hashchange`, wipes `#content` and calls the view's `render(container, param)`; the hash may carry a `/param` — `#session/<id>` → route `session`, param `<id>` — and the `session` route keeps the "Sessions" nav item highlighted), `window.App` helpers (`toast`, `esc`, `fmtNum`, `fmtDate`, `refresh`, `exportExcel`, `confirm` [promise modal], `choose` [multi-button promise modal → chosen key]), the scan button + startup ping-then-scan, `loadVersion()` (fetches `app.info` once at startup, sets `#app-version`'s text to `short` and `title` to the multi-line `detail` tooltip — silently leaves it blank on failure, no toast), and a global 3s poll of `livecode.running` that colours the sidebar "Live Code" dot (green = `count>0`, red = none). `setupNavPopover()` shows a hover panel over the Live Code nav item listing live tabs (`livecode.list`); clicking a row calls `Views.livecode.focusTab(tabId)`. Background (auto) scan only re-renders the dashboard so form state elsewhere survives. |
 | `js/views/dashboard.js` | Stat tiles + Chart.js charts; fixed `CATEGORY_COLORS` palette (color follows the category, not chart rank); consumes `stats.dashboard`. **Non-ticket sessions** (between Top tickets and Ticket type × AI activity) is a horizontal bar chart of unlinked spend per project folder, in `AMBER` so it doesn't read as more blue Top-tickets bars, with its own tokens/sessions toggle (`setNonTicketMetric`); axis labels are the last two path segments (`projectLabel`), full path in the tooltip. Non-ticket rows also count towards `hasData`, so a DB with sessions but no links still renders the charts. Includes an **Automation & extensions** section — four horizontal bar charts (`renderExtCharts`): sub-agents / skills / MCP servers / hooks by total uses, one hue each (`EXT_COLORS`), long labels truncated on the axis with the full name in the tooltip; hidden when there's no such data. |
 | `js/views/sessions.js` | Sessions table with All / Needs review / Not-ticket-related tabs, tool-mix bar, ticket-badge confirm/remove, inline assign, dismiss/reopen; Export button. Each row's title is a link to `#session/<id>` (detail page). |
 | `js/views/session.js` | Session **detail** page (`#session/<id>`, reached from the Sessions list). Renders cards from `sessions.detail`: **Overview** (started/ended, Agent·Active·Idle time split, primary model, category, review state, total tokens with in/out/cache split + a "+ sub-agents" note, prompt/reply/tool-call counts), **Tools** (one coloured segment per tool + a name×count list), **Models** (per-model output bar), **Agents & extensions** (four labelled chip groups: Agents / MCP tools / Skills / Hooks; "—" per empty group), **Token cost** (cost derived here from a model-family `$/Mtok` rate table → est. cost, cache-hit %, output share, and cache-read/write·output·input breakdown bars), and **Tickets** last (reuses `Views.sessions` confirm/unlink/assign). `back()` = `history.back()` (fallback `#sessions`). |
@@ -191,7 +200,7 @@ Indexes: `idx_links_ticket`, `idx_manual_ticket`, `idx_sessions_started`, `idx_t
 `manual.list` · `manual.create` · `manual.delete` · `tickets.list` · `tickets.fetch` ·
 `tickets.sync` · `tickets.fetchMore` · `jira.test` · `settings.get` · `settings.set` ·
 `stats.dashboard` · `export.sessions` · `export.manual` ·
-`export.tickets` · `livecode.config` · `livecode.saveConfig` · `livecode.tickets` ·
+`export.tickets` · `app.info` · `livecode.config` · `livecode.saveConfig` · `livecode.tickets` ·
 `livecode.listAgents` · `livecode.pickFolder` · `livecode.pickAgentFile` · `livecode.folderInfo` · `livecode.sessionsInFolder` · `livecode.start` · `livecode.stop` ·
 `livecode.closeTab` · `livecode.metrics` · `livecode.resume` · `livecode.resumeSession` · `livecode.reset` · `livecode.attach` · `livecode.list` ·
 `livecode.running` · `livecode.activeSessions` · `livecode.usage` · `pty.input` · `pty.resize` · `ping` (built-in).
@@ -244,6 +253,19 @@ SQLitePCLRaw.bundle_e_sqlite3 · **Porta.Pty** (ConPTY wrapper for the Live Code
 
 ---
 
+## Versioning & license
+
+- **Version**: `AIUsage.csproj`'s `<Version>` (semver, bumped by hand). The `SetGitCommitHash`
+  target (runs `git rev-parse --short=7 HEAD`, best-effort) sets `SourceRevisionId`, which the
+  SDK appends as `+<hash>` onto `AssemblyInformationalVersion`; an `AssemblyMetadata` item stamps
+  the UTC `BuildDate`. `Platform/AppVersion.cs` reads both back at runtime; `app.info` /
+  `--version` / the sidebar footer all read from it — nothing else derives a version independently.
+- **License**: MIT (`LICENSE`, copyright Aaron Brata Aditama). Vendored JS (Chart.js, xterm.js,
+  xterm-addon-fit.js) and NuGet deps (Photino.NET/SQLitePCLRaw under Apache-2.0; the rest MIT) are
+  listed with their notices in `THIRD-PARTY-NOTICES.md`.
+
+---
+
 ## Tests (`AIUsage.Tests/`, xUnit)
 
 Run with **`dotnet test AIUsage.Tests`**. The project references `AIUsage.csproj` and is
@@ -262,6 +284,7 @@ excludes `AIUsage.Tests\**` from its default compile glob.
 | `TokensWeeklyTests.cs` | `StatsHandlers.TokensWeeklySql` — spend-week attribution, bucket-less fallback, zero-filled quiet weeks. |
 | `NonTicketProjectsTests.cs` | `StatsHandlers.NonTicketProjectsSql` — folder grouping (case-insensitive), link exclusion by any source, `(unknown folder)` label, top-10 cut. |
 | `DataRepoTests.cs` | `TicketRepo` / `ManualEntryRepo` round-trips. |
+| `AppVersionTests.cs` | `AppVersion.Parse` — semver+commit split, bare semver, missing/blank input; sanity check that the built assembly's static fields are populated. |
 
 Data-layer tests use `Helpers/TestDb` — a fresh in-memory SQLite DB migrated to the current schema
 per test (repositories take an explicit connection, so no global `Db` state is touched → parallel-safe).

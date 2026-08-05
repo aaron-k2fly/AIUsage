@@ -149,4 +149,11 @@ DPAPI (`System.Security.Cryptography.ProtectedData`).
 
 ---
 
+## License
+
+MIT — see [`LICENSE`](LICENSE). Third-party components (Chart.js, xterm.js, and the NuGet
+dependencies) are under their own permissive licenses; see [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).
+
+---
+
 *Personal tooling — provided as-is, for a single user's local use.*

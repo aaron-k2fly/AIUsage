@@ -8,7 +8,34 @@
     <RootNamespace>AIUsage</RootNamespace>
     <AssemblyName>AIUsage</AssemblyName>
     <ApplicationIcon>Resources\appicon.ico</ApplicationIcon>
+    <!-- App version (semver). Bump by hand when a change is worth a release; read at runtime
+         via Platform/AppVersion.cs. The git commit hash below is appended automatically as
+         "+<hash>" onto AssemblyInformationalVersion (SourceRevisionId is an SDK-recognized
+         property, wired up by AddSourceRevisionToInformationalVersion in
+         Microsoft.NET.GenerateAssemblyInfo.targets — no SourceLink package needed). -->
+    <Version>1.0.0</Version>
   </PropertyGroup>
+
+  <!-- Stamps the git short commit hash (if available) and UTC build date, both best-effort:
+       a build outside a git checkout (no git installed, or a plain zip of the source) must
+       still succeed, just without a commit hash. -->
+  <Target Name="SetGitCommitHash" BeforeTargets="InitializeSourceControlInformation">
+    <Exec Command="git rev-parse --short=7 HEAD"
+          ConsoleToMSBuild="true"
+          IgnoreExitCode="true"
+          ContinueOnError="WarnAndContinue"
+          StandardOutputImportance="Low">
+      <Output TaskParameter="ConsoleOutput" PropertyName="_GitCommitHash" />
+      <Output TaskParameter="ExitCode" PropertyName="_GitExitCode" />
+    </Exec>
+    <PropertyGroup Condition="'$(_GitExitCode)' == '0' and '$(_GitCommitHash)' != ''">
+      <SourceRevisionId>$(_GitCommitHash)</SourceRevisionId>
+    </PropertyGroup>
+  </Target>
+
+  <ItemGroup>
+    <AssemblyMetadata Include="BuildDate" Value="$([System.DateTime]::UtcNow.ToString('yyyy-MM-dd'))" />
+  </ItemGroup>
 
   <!-- Web assets are embedded (not copied), so the published single-file exe is fully
        self-contained. LogicalName keeps the folder structure via %(RecursiveDir); the app

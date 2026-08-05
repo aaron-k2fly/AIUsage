@@ -39,6 +39,7 @@ internal static class Program
         if (iconPath is not null) window.SetIconFile(iconPath);
 
         var router = new MessageRouter(window);
+        Bridge.Handlers.AppHandlers.Register(router);
         Bridge.Handlers.SessionHandlers.Register(router);
         Bridge.Handlers.ManualHandlers.Register(router);
         Bridge.Handlers.JiraHandlers.Register(router);
@@ -58,6 +59,10 @@ internal static class Program
     {
         switch (args[0])
         {
+            case "--version":
+                Console.WriteLine(Platform.AppVersion.Detail);
+                break;
+
             case "--scan":
                 var r = new Scanner.TranscriptScanner().Run();
                 Console.WriteLine($"sessions={r.Sessions} newFiles={r.NewFiles} updatedFiles={r.UpdatedFiles} skippedFiles={r.SkippedFiles}");
@@ -124,7 +129,7 @@ internal static class Program
                 break;
 
             default:
-                Console.WriteLine("Usage: AIUsage [--scan | --sql \"SELECT ...\" | --set <key> <value> | --pty-test | --envtest]");
+                Console.WriteLine("Usage: AIUsage [--scan | --sql \"SELECT ...\" | --set <key> <value> | --pty-test | --envtest | --version]");
                 break;
         }
     }
