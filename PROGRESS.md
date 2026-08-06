@@ -2,12 +2,19 @@
 
 _Last updated: 2026-08-06_
 
-## 2026-08-06: Released as **1.0.1** (security fixes)
+## 2026-08-06: Version bumped to **1.0.1** — release NOT published yet
 
-`AIUsage.csproj` `<Version>` bumped 1.0.0 → 1.0.1 for the audit remediation below, and a fresh
-single-file exe published to GitHub release **v1.0.1**. The v1.0.0 asset is deliberately kept for
-history — so `--version` (which prints semver + commit) is how you tell a fixed build from the
-vulnerable one: anything reporting 1.0.0 predates the command-injection fix.
+`AIUsage.csproj` `<Version>` is 1.0.1 for the audit remediation below, so the number is already right
+whenever a build ships. **No GitHub release was cut**: `v1.0.0` is still the latest published asset,
+and it is the **vulnerable** build (it predates the command-injection fix). Publish when ready — the
+`--version` output (semver + commit) is what distinguishes the two.
+
+Gotcha found while publishing: the documented deliverable path
+(`bin\Release\net10.0\win-x64\publish\AIUsage.exe`) is **locked while the app is running from it** —
+`dotnet publish` dies with `UnauthorizedAccessException … publish\AIUsage.exe`. That folder is also
+where the portable `aiusage.db` for the released build lives, so it's often in use. Either close the
+app first or publish elsewhere with `-p:PublishDir=<dir>/` (the exe is identical; only the output
+location changes).
 
 ## 2026-08-06: Security audit remediation — LOW findings (user request, follow-up)
 
