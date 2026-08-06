@@ -23,18 +23,25 @@ public sealed class JiraClient
 
     private JiraClient(string site, string email, string token)
     {
-        _site = site.TrimEnd('/');
+        _site = JiraSiteUrl.Normalize(site);
         _auth = new AuthenticationHeaderValue("Basic",
             Convert.ToBase64String(Encoding.UTF8.GetBytes($"{email}:{token}")));
     }
 
-    /// <summary>Null when site URL, email, or token is not configured.</summary>
+    /// <summary>
+    /// Null when site URL, email, or token is not configured — and also when the stored site URL
+    /// isn't a valid `https://` address. The Basic header carries a reversible credential, so an
+    /// insecure URL disables JIRA rather than sending it in cleartext (2026-08 audit, AIU-06);
+    /// `settings.get` reports `jiraSiteUrlInsecure` so the Settings page can say why.
+    /// </summary>
     public static JiraClient? FromSettings()
     {
         var site = SettingsStore.Get("jira_site_url");
         var email = SettingsStore.Get("jira_email");
         var token = SettingsStore.GetProtected("jira_token");
         if (string.IsNullOrWhiteSpace(site) || string.IsNullOrWhiteSpace(email) || string.IsNullOrWhiteSpace(token))
+            return null;
+        if (!JiraSiteUrl.IsSecure(site))
             return null;
         return new JiraClient(site, email, token);
     }

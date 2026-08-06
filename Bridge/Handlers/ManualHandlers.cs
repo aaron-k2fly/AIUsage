@@ -1,5 +1,4 @@
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using AIUsage.Data;
 using AIUsage.Data.Repositories;
 using AIUsage.Jira;
@@ -8,9 +7,6 @@ namespace AIUsage.Bridge.Handlers;
 
 public static partial class ManualHandlers
 {
-    [GeneratedRegex(@"^[A-Z][A-Z0-9]{1,9}-\d{1,6}$")]
-    private static partial Regex TicketKeyRegex();
-
     public static void Register(MessageRouter router)
     {
         // Synchronous handlers return Task.FromResult (no Task.Run) — see the note in
@@ -29,9 +25,7 @@ public static partial class ManualHandlers
 
         router.Register("manual.create", payload =>
         {
-            var key = (SessionHandlers.GetString(payload, "ticketKey") ?? "").Trim().ToUpperInvariant();
-            if (!TicketKeyRegex().IsMatch(key))
-                throw new ArgumentException($"'{key}' is not a valid ticket key (expected e.g. SFTY-1234)");
+            var key = TicketKey.Require(SessionHandlers.GetString(payload, "ticketKey"));
 
             var date = SessionHandlers.GetString(payload, "entryDate");
             if (!DateOnly.TryParse(date, out _))

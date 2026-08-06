@@ -322,27 +322,17 @@ window.Views.livecode = (function () {
     });
     document.getElementById('lc-custom-agent').addEventListener('change', () => saveConfig());
     document.getElementById('lc-custom-agent-browse').addEventListener('click', browseCustomAgent);
-    document.getElementById('lc-auto').addEventListener('change', async e => {
-      if (!e.target.checked) { t.autoApprove = false; saveConfig(); return; }
-      const ok = await App.confirm(
-        'Auto-approve confirmations?\n\n' +
-        'Claude Code will try to automatically approve any prompts it raises during the session ' +
-        '(such as file edits) so it can keep working without waiting for you. Only use this in a ' +
-        'folder you trust.',
-        'Enable auto-approve');
-      t.autoApprove = ok;
-      e.target.checked = ok;
+    // The checkbox only *requests* an elevated permission mode — it no longer grants it. The backend
+    // asks for confirmation at a NATIVE dialog on the first launch that wants the mode (once per tab),
+    // because a decision this dangerous must not be made by the layer an injected script controls
+    // (2026-08 audit, AIU-07). That's also why the in-page confirm that used to live here is gone:
+    // the warning now appears at the OS dialog, right before the session actually starts.
+    document.getElementById('lc-auto').addEventListener('change', e => {
+      t.autoApprove = !!e.target.checked;
       saveConfig();
     });
-    document.getElementById('lc-bypass').addEventListener('change', async e => {
-      if (!e.target.checked) { t.bypass = false; return; }
-      const ok = await App.confirm(
-        'Bypass ALL permission checks?\n\n' +
-        'Claude Code will run every action — editing files AND running shell commands — with NO ' +
-        'confirmation. Only use this in a folder you trust.',
-        'Enable bypass', true);
-      t.bypass = ok;
-      e.target.checked = ok;
+    document.getElementById('lc-bypass').addEventListener('change', e => {
+      t.bypass = !!e.target.checked;
     });
 
     document.getElementById('lc-start').addEventListener('click', start);
@@ -538,11 +528,12 @@ window.Views.livecode = (function () {
     }
     const term = createTerm(t);
     try {
-      await Bridge.call('livecode.resumeSession', {
+      const r = await Bridge.call('livecode.resumeSession', {
         tabId: t.tabId, folder: t.folder, sessionId,
         shell: t.shell, autoApprove: t.autoApprove, bypass: t.bypass,
         cols: term.cols, rows: term.rows
       }, 0);
+      notePermissionResult(t, r);
       t.running = true;
       t.canResume = true;
       t.resumedPick = true;
@@ -628,6 +619,25 @@ window.Views.livecode = (function () {
       folder: t.folder, shell: t.shell, model: t.model,
       autoApprove: t.autoApprove, customAgent: t.customAgent
     }).catch(() => {});
+  }
+
+  // A launch may report that the elevated permission mode it asked for was NOT granted at the native
+  // dialog (declined, or the dialog couldn't be shown — the host fails closed). The session still
+  // started, just with normal prompts, so say so and untick the box to match reality.
+  function notePermissionResult(t, r) {
+    if (!t || !r || !r.permissionDenied) return;
+    if (r.permissionRequested === 'bypassPermissions') {
+      t.bypass = false;
+      const el = document.getElementById('lc-bypass');
+      if (el) el.checked = false;
+      App.toast('Bypass ALL permissions was not confirmed — this session runs with normal prompts.', true);
+    } else {
+      t.autoApprove = false;
+      const el = document.getElementById('lc-auto');
+      if (el) el.checked = false;
+      saveConfig();
+      App.toast('Auto-approve was not confirmed — this session runs with normal prompts.', true);
+    }
   }
 
   let hashHooked = false;
@@ -875,6 +885,7 @@ window.Views.livecode = (function () {
         isolation,
         cols: term.cols, rows: term.rows
       }, 0);
+      notePermissionResult(t, r);
       t.running = true;
       t.canResume = true;
       t.activeFolder = (r && r.folder) || t.folder;
@@ -906,11 +917,12 @@ window.Views.livecode = (function () {
     saveConfig();
     const term = createTerm(t);
     try {
-      await Bridge.call('livecode.resume', {
+      const r = await Bridge.call('livecode.resume', {
         tabId: t.tabId,
         shell: t.shell, folder: t.folder, model: t.model, agent: t.agent,
         autoApprove: t.autoApprove, bypass: t.bypass, cols: term.cols, rows: term.rows
       }, 0);
+      notePermissionResult(t, r);
       t.running = true;
       updateButtons(); renderTabBar();
       App.toast('Resuming the previous session…');
@@ -939,6 +951,7 @@ window.Views.livecode = (function () {
         isolation: 'none',
         cols: term.cols, rows: term.rows
       }, 0);
+      notePermissionResult(t, r);
       t.running = true;
       t.canResume = true;
       updateButtons(); renderTabBar();

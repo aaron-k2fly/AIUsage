@@ -119,6 +119,33 @@ internal static class Program
                 break;
 
             case "--set" when args.Length > 2:
+                // Same validation as the Settings UI: the site URL is where a reversible Basic
+                // credential gets sent, so http:// (and anything not an absolute https URL) is
+                // rejected here too rather than only in the WebView (2026-08 audit, AIU-06).
+                if (args[1] == "jira_site_url" && !string.IsNullOrWhiteSpace(args[2]))
+                {
+                    try
+                    {
+                        var normalized = Jira.JiraSiteUrl.Normalize(args[2]);
+                        // Same rule as the UI: a new host must not inherit the old host's token.
+                        if (Jira.JiraSiteUrl.PointsAtADifferentHost(
+                                Settings.SettingsStore.Get("jira_site_url"), normalized)
+                            && Settings.SettingsStore.GetProtected("jira_token") is not null)
+                        {
+                            Settings.SettingsStore.Set("jira_token", null);
+                            Console.WriteLine("cleared jira_token (site URL points at a different host)");
+                        }
+                        Settings.SettingsStore.Set("jira_site_url", normalized);
+                    }
+                    catch (ArgumentException ex)
+                    {
+                        Console.WriteLine(ex.Message);
+                        Environment.ExitCode = 1;
+                        break;
+                    }
+                    Console.WriteLine($"set {args[1]}");
+                    break;
+                }
                 if (args[1] == "jira_token")
                     Settings.SettingsStore.SetProtected("jira_token", args[2]);
                 else

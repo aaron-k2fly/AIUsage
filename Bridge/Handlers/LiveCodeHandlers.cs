@@ -53,6 +53,14 @@ public static class LiveCodeHandlers
     private static readonly object Gate = new();
     private static readonly Dictionary<string, LiveSession> Tabs = new();
 
+    /// <summary>Elevated permission modes the USER has granted, per tab (see
+    /// <see cref="GrantPermissionMode"/>). Guarded by <see cref="Gate"/>.</summary>
+    private static readonly Dictionary<string, HashSet<string>> PermissionGrants = new();
+
+    /// <summary>The app window, for host-side (native) confirmation dialogs. Null in headless CLI
+    /// runs, in which case an elevated permission mode is never granted.</summary>
+    private static PhotinoWindow? _window;
+
     /// <summary>Get-or-create the entry for a tab. Call under <see cref="Gate"/>.</summary>
     private static LiveSession Entry(string tabId)
     {
@@ -62,6 +70,8 @@ public static class LiveCodeHandlers
 
     public static void Register(MessageRouter router, PhotinoWindow window)
     {
+        _window = window;   // for host-side permission confirmation (GrantPermissionMode)
+
         // Synchronous handlers return Task.FromResult (no Task.Run) — see the note in
         // SessionHandlers.Register on the null-return / unwrap-overload cancellation trap.
 
@@ -187,7 +197,7 @@ public static class LiveCodeHandlers
             TryGetBool(payload, "bypass", out var bypass);
             var cols = (short)GetInt(payload, "cols", 120);
             var rows = (short)GetInt(payload, "rows", 30);
-            var permissionMode = bypass ? "bypassPermissions" : autoApprove ? "acceptEdits" : null;
+            var requestedMode = bypass ? "bypassPermissions" : autoApprove ? "acceptEdits" : null;
 
             string? resumeId, resumeFolder, ticketKey;
             lock (Gate)
@@ -204,10 +214,13 @@ public static class LiveCodeHandlers
             if (!string.IsNullOrWhiteSpace(folder) && !Directory.Exists(folder))
                 throw new ArgumentException($"Folder not found: {folder}");
 
+            // Elevated modes need the user's confirmation at a native dialog (AIU-07), same as start.
+            var permissionMode = GrantPermissionMode(tabId, requestedMode, folder, ticketKey);
             var shell = ShellResolver.Resolve(shellReq);
-            var kickoff = BuildResumeCommand(shell.Kind, resumeId!, model, agent, permissionMode);
+            var kickoff = ClaudeCommand.BuildResume(shell.Kind, resumeId!, model, agent, permissionMode);
             return Task.FromResult<object?>(
-                LaunchInPty(router, tabId, shell, folder, cols, rows, kickoff, permissionMode, resumeId!, model, ticketKey, trackSession: true));
+                LaunchInPty(router, tabId, shell, folder, cols, rows, kickoff, permissionMode, resumeId!, model, ticketKey,
+                            trackSession: true, requestedMode: requestedMode));
         });
 
         // Resume a specific past session chosen in the Resume Sessions picker, in the tab's terminal
@@ -226,13 +239,14 @@ public static class LiveCodeHandlers
             TryGetBool(payload, "bypass", out var bypass);
             var cols = (short)GetInt(payload, "cols", 120);
             var rows = (short)GetInt(payload, "rows", 30);
-            var permissionMode = bypass ? "bypassPermissions" : autoApprove ? "acceptEdits" : null;
+            var requestedMode = bypass ? "bypassPermissions" : autoApprove ? "acceptEdits" : null;
+            var permissionMode = GrantPermissionMode(tabId, requestedMode, folder, ticketKey: null);
 
             var shell = ShellResolver.Resolve(shellReq);
-            var kickoff = BuildResumeSessionCommand(shell.Kind, sessionId!, permissionMode);
+            var kickoff = ClaudeCommand.BuildResumeSession(shell.Kind, sessionId!, permissionMode);
             return Task.FromResult<object?>(
                 LaunchInPty(router, tabId, shell, folder, cols, rows, kickoff, permissionMode, sessionId!,
-                            model: null, ticketKey: null, trackSession: true));
+                            model: null, ticketKey: null, trackSession: true, requestedMode: requestedMode));
         });
 
         // Re-attach after navigating away and back: returns the tab's buffered output (base64) to
@@ -312,6 +326,9 @@ public static class LiveCodeHandlers
             WorktreeInfo? wt;
             lock (Gate)
             {
+                // A closed tab's permission grant dies with it: a new tab (even one reusing the id)
+                // must ask the user again.
+                PermissionGrants.Remove(tabId);
                 if (!Tabs.TryGetValue(tabId, out var e))
                     return Task.FromResult<object?>(new { worktreeKept = false, worktreeReason = (string?)null, worktreePath = (string?)null });
                 e.Session?.Dispose();
@@ -499,18 +516,25 @@ public static class LiveCodeHandlers
         var model = SessionHandlers.GetString(payload, "model");
         var agent = SessionHandlers.GetString(payload, "agent");
         var customAgent = SessionHandlers.GetString(payload, "customAgent");
-        var ticketKey = SessionHandlers.GetString(payload, "ticketKey");
+        // A ticket is optional (no ticket = a bare shell, no kickoff), but if one is given it must be
+        // a real key: this used to be the ONLY unconstrained writer of SessionTicketLinks.ticket_key,
+        // and the value originates from a remote JIRA server (2026-08 audit, AIU-04).
+        var ticketKeyRaw = SessionHandlers.GetString(payload, "ticketKey");
+        var ticketKey = string.IsNullOrWhiteSpace(ticketKeyRaw) ? null : TicketKey.Require(ticketKeyRaw);
         var ticketSummary = SessionHandlers.GetString(payload, "ticketSummary");
         TryGetBool(payload, "autoApprove", out var autoApprove);
         TryGetBool(payload, "bypass", out var bypass);
         var cols = (short)GetInt(payload, "cols", 120);
         var rows = (short)GetInt(payload, "rows", 30);
 
-        // bypass (confirmed in the UI) > auto-approve (acceptEdits) > default (manual prompts).
-        var permissionMode = bypass ? "bypassPermissions" : autoApprove ? "acceptEdits" : null;
-
         if (!string.IsNullOrWhiteSpace(folder) && !Directory.Exists(folder))
             throw new ArgumentException($"Folder not found: {folder}");
+
+        // bypass > auto-approve (acceptEdits) > default (manual prompts) — but an elevated mode only
+        // takes effect once the USER confirms it at a native dialog; see GrantPermissionMode.
+        var requestedMode = bypass ? "bypassPermissions" : autoApprove ? "acceptEdits" : null;
+        var permissionMode = GrantPermissionMode(tabId, requestedMode, folder, ticketKey);
+        var permissionDenied = requestedMode is not null && permissionMode is null;
 
         // Agent to use: a picked Custom Agent file (installed into .claude/agents so Claude finds it)
         // takes precedence over the dropdown selection.
@@ -560,9 +584,9 @@ public static class LiveCodeHandlers
 
         // Pin an explicit session id so metrics read exactly this session's transcript.
         var sessionId = Guid.NewGuid().ToString();
-        var kickoff = string.IsNullOrWhiteSpace(ticketKey)
+        var kickoff = ticketKey is null
             ? null
-            : BuildClaudeCommand(shell.Kind, ticketKey!, ticketSummary, description, model, agentName, permissionMode, sessionId);
+            : ClaudeCommand.BuildTicket(shell.Kind, ticketKey, ticketSummary, description, model, agentName, permissionMode, sessionId);
 
         // Record the ticket ↔ session link now (before the transcript exists).
         if (kickoff is not null && !string.IsNullOrWhiteSpace(launchFolder))
@@ -584,14 +608,15 @@ public static class LiveCodeHandlers
 
         return new { shell = shell.Kind, fellBack = shell.FellBack, kickoff = kickoff is not null,
                      agentUsed = agentName, isolated = worktree is not null, worktreePath = worktree?.WorktreePath,
-                     folder = launchFolder };
+                     folder = launchFolder,
+                     permissionMode, permissionDenied, permissionRequested = requestedMode };
     }
 
     /// <summary>Spawn the shell in a pseudo-console for the tab, wire output/exit/kickoff/auto-approve,
     /// and record the active + last session on the tab's entry. Shared by start and resume.</summary>
     private static object LaunchInPty(MessageRouter router, string tabId, ResolvedShell shell, string? folder,
         short cols, short rows, string? kickoff, string? permissionMode, string sessionId, string? model,
-        string? ticketKey, bool trackSession)
+        string? ticketKey, bool trackSession, string? requestedMode = null)
     {
         // Best-effort auto-answer only when auto-approving (bypass never prompts; default = manual).
         var watcher = permissionMode == "acceptEdits" ? new PromptWatcher() : null;
@@ -644,66 +669,71 @@ public static class LiveCodeHandlers
             if (ticketKey is not null) e.TicketKey = ticketKey;
             if (trackSession) { e.LastSessionId = sessionId; e.LastFolder = folder; }
         }
-        return new { shell = shell.Kind, fellBack = shell.FellBack, kickoff = kickoff is not null };
+        return new
+        {
+            shell = shell.Kind,
+            fellBack = shell.FellBack,
+            kickoff = kickoff is not null,
+            permissionMode,
+            permissionRequested = requestedMode,
+            permissionDenied = requestedMode is not null && permissionMode is null
+        };
     }
 
-    /// <summary>`claude --resume <id>` (+ model/agent/permission flags) — continues the prior conversation.</summary>
-    private static string BuildResumeCommand(string shellKind, string sessionId, string? model, string? agent, string? permissionMode)
+    /// <summary>
+    /// Decide the permission mode a launch may actually use. The page can *ask* for `acceptEdits` or
+    /// `bypassPermissions`, but only the user — at a **native** OS dialog the WebView cannot answer —
+    /// can grant it, once per tab per mode. Returns the requested mode when granted, otherwise null
+    /// (the session still starts, with normal manual prompts).
+    ///
+    /// Why: the bridge dispatches purely by action name and every other confirmation lives in the
+    /// frontend, so the backend used to take `bypass`/`autoApprove` straight off the payload —
+    /// meaning any script in the document could start an auto-approving agent with no user
+    /// involvement (2026-08 audit, AIU-07). Moving just this decision to the host keeps the
+    /// one-click flow for ordinary (manual-prompt) sessions while making the dangerous modes
+    /// impossible to arm silently. Callers must be reachable only via unbounded-timeout bridge calls
+    /// — the dialog waits on a human.
+    /// </summary>
+    private static string? GrantPermissionMode(string tabId, string? requested, string? folder, string? ticketKey)
     {
-        var sb = new StringBuilder("claude --resume ").Append(sessionId);
-        if (model is "opus" or "sonnet" or "haiku" or "fable") sb.Append(" --model ").Append(model);
-        if (!string.IsNullOrWhiteSpace(agent)) sb.Append(" --agent ").Append(ShellQuote(shellKind, agent));
-        if (permissionMode is not null) sb.Append(" --permission-mode ").Append(permissionMode);
-        // Positional prompt: resume AND immediately tell Claude to continue the work.
-        sb.Append(' ').Append(ShellQuote(shellKind, "continue"));
-        return sb.ToString();
+        if (requested is null) return null;                    // manual prompts need no grant
+
+        lock (Gate)
+            if (PermissionGrants.TryGetValue(tabId, out var already) && already.Contains(requested))
+                return requested;                              // already confirmed for this tab
+
+        var window = _window;
+        if (window is null) return null;                       // no host UI → never elevate
+
+        var where = string.IsNullOrWhiteSpace(folder) ? "(the app's current folder)" : folder!;
+        var what = string.IsNullOrWhiteSpace(ticketKey) ? "none" : ticketKey!;
+        // Both texts name file edits AND shell commands: auto-approve answers whatever prompt comes
+        // up, including a Bash execution prompt, so describing it as "file edits" would understate it.
+        var message = requested == "bypassPermissions"
+            ? "Bypass ALL permission checks for this Live Code session?\n\n" +
+              "Claude Code will run every action — editing files AND running shell commands — with NO confirmation.\n\n" +
+              $"Folder: {where}\nTicket: {what}\n\n" +
+              "Only allow this in a folder you trust. If you did not just start a session, choose No."
+            : "Auto-approve confirmations for this Live Code session?\n\n" +
+              "Claude Code will automatically answer the prompts it raises — including file edits AND shell commands — " +
+              "so it can keep working without waiting for you.\n\n" +
+              $"Folder: {where}\nTicket: {what}\n\n" +
+              "Only allow this in a folder you trust. If you did not just start a session, choose No.";
+
+        if (!MessageDialog.Confirm(window, "Live Code permissions", message))
+            return null;
+
+        lock (Gate)
+        {
+            if (!PermissionGrants.TryGetValue(tabId, out var granted))
+            {
+                granted = new HashSet<string>(StringComparer.Ordinal);
+                PermissionGrants[tabId] = granted;
+            }
+            granted.Add(requested);
+        }
+        return requested;
     }
-
-    /// <summary>`claude --resume <id>` (+ permission flag) with NO positional prompt — reopens the
-    /// chosen session interactively (used by the Resume Sessions picker). `shellKind` is kept for
-    /// signature symmetry with <see cref="BuildResumeCommand"/>.</summary>
-    private static string BuildResumeSessionCommand(string shellKind, string sessionId, string? permissionMode)
-    {
-        _ = shellKind;
-        var sb = new StringBuilder("claude --resume ").Append(sessionId);
-        if (permissionMode is not null) sb.Append(" --permission-mode ").Append(permissionMode);
-        return sb.ToString();
-    }
-
-    /// <summary>Build the interactive `claude` invocation typed into the shell to kick off a ticket.</summary>
-    private static string BuildClaudeCommand(string shellKind, string key, string? summary,
-        string? description, string? model, string? agentName, string? permissionMode, string sessionId)
-    {
-        var ticket = string.IsNullOrWhiteSpace(summary)
-            ? $"JIRA ticket {key}"
-            : $"JIRA ticket {key}: {summary}";
-        // When an agent is chosen, tell Claude to USE that agent on the ticket (it invokes the
-        // matching subagent from .claude/agents); otherwise work the ticket directly.
-        var prompt = string.IsNullOrWhiteSpace(agentName)
-            ? $"Work on {ticket}. Make sure to understand the ticket first, and ask questions if anything is unclear. And then before implementing, make sure to create a plan document and confirm first."
-            : $"Use the {agentName} agent to work on {ticket}.";
-        if (!string.IsNullOrWhiteSpace(description))
-            prompt += " " + description.Trim();
-
-        // Flatten to a single line: the command is TYPED into an interactive shell, and an
-        // embedded newline would be read as Enter (submitting the command early).
-        prompt = prompt.Replace('\r', ' ').Replace('\n', ' ').Replace('\t', ' ');
-        while (prompt.Contains("  ")) prompt = prompt.Replace("  ", " ");
-        prompt = prompt.Trim();
-
-        var sb = new StringBuilder("claude");
-        sb.Append(" --session-id ").Append(sessionId);
-        if (model is "opus" or "sonnet" or "haiku" or "fable") sb.Append(" --model ").Append(model);
-        if (permissionMode is not null) sb.Append(" --permission-mode ").Append(permissionMode);
-        sb.Append(' ').Append(ShellQuote(shellKind, prompt));
-        return sb.ToString();
-    }
-
-    /// <summary>Single-quote a value for the target shell (newlines survive inside single quotes in
-    /// both PowerShell and bash, so multi-line prompts pass through intact).</summary>
-    private static string ShellQuote(string shellKind, string s) => shellKind == "bash"
-        ? "'" + s.Replace("'", "'\\''") + "'"
-        : "'" + s.Replace("'", "''") + "'";
 
     /// <summary>Read the required tabId from a payload (throws with a clear message if absent).</summary>
     private static string RequireTabId(JsonElement payload)

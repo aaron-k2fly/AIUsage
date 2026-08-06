@@ -77,8 +77,12 @@ public static class JiraHandlers
 
         router.Register("jira.test", async _ =>
         {
-            var client = JiraClient.FromSettings()
-                ?? throw new InvalidOperationException("Fill in site URL, email and token first (and Save)");
+            // FromSettings also returns null for a non-https site URL (the Basic credential would go
+            // out in cleartext), so say which of the two it is rather than "fill it in".
+            var client = JiraClient.FromSettings() ?? throw new InvalidOperationException(
+                JiraSiteUrl.IsSecure(SettingsStore.Get("jira_site_url")) || string.IsNullOrWhiteSpace(SettingsStore.Get("jira_site_url"))
+                    ? "Fill in site URL, email and token first (and Save)"
+                    : "The site URL must be an https:// address — the API token is sent as a reversible credential on every request. Fix it and Save.");
             var user = await client.TestConnectionAsync();
             return new { user };
         });

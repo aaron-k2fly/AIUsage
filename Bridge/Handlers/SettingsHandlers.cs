@@ -13,6 +13,11 @@ public static class SettingsHandlers
         router.Register("settings.get", _ => Task.FromResult<object?>(new
         {
             jiraSiteUrl = SettingsStore.Get("jira_site_url") ?? "",
+            // A stored non-https URL disables JIRA (JiraClient.FromSettings returns null) rather
+            // than sending the Basic credential in cleartext — the page explains that instead of
+            // showing a bare "not configured".
+            jiraSiteUrlInsecure = !string.IsNullOrWhiteSpace(SettingsStore.Get("jira_site_url"))
+                                  && !JiraSiteUrl.IsSecure(SettingsStore.Get("jira_site_url")),
             jiraEmail = SettingsStore.Get("jira_email") ?? "",
             jiraTokenSet = SettingsStore.GetProtected("jira_token") is not null,
             scanPaths = SettingsStore.Get("scan_paths") ?? "",
@@ -25,7 +30,30 @@ public static class SettingsHandlers
 
         router.Register("settings.set", payload =>
         {
-            SetIfPresent(payload, "jiraSiteUrl", "jira_site_url");
+            // The site URL is validated, not just trimmed: it's where a reversible Basic credential
+            // gets sent. An invalid value throws before anything is written (the UI toasts the
+            // message); an empty value clears the setting. If the host changes, the stored token is
+            // dropped — it belongs to the old host and must not be replayable to a new one.
+            var tokenCleared = false;
+            var siteRaw = SessionHandlers.GetString(payload, "jiraSiteUrl");
+            if (siteRaw is not null)
+            {
+                if (string.IsNullOrWhiteSpace(siteRaw))
+                {
+                    SettingsStore.Set("jira_site_url", "");
+                }
+                else
+                {
+                    var site = JiraSiteUrl.Normalize(siteRaw);
+                    if (JiraSiteUrl.PointsAtADifferentHost(SettingsStore.Get("jira_site_url"), site)
+                        && SettingsStore.GetProtected("jira_token") is not null)
+                    {
+                        SettingsStore.Set("jira_token", null);
+                        tokenCleared = true;
+                    }
+                    SettingsStore.Set("jira_site_url", site);
+                }
+            }
             SetIfPresent(payload, "jiraEmail", "jira_email");
             SetIfPresent(payload, "scanPaths", "scan_paths");
             SetIfPresent(payload, "backfillFrom", "backfill_from");
@@ -49,7 +77,7 @@ public static class SettingsHandlers
                 if (!string.Equals(before.Trim(), newAllowlist.Trim(), StringComparison.OrdinalIgnoreCase))
                     PurgeDisallowedAutoLinks();
             }
-            return Task.FromResult<object?>(null);
+            return Task.FromResult<object?>(new { tokenCleared });
         });
     }
 
