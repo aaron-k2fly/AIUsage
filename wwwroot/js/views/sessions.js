@@ -30,33 +30,77 @@ window.Views.sessions = (function () {
     </div>`;
   }
 
+  // Row/badge actions are carried in data-* attributes and dispatched by ONE delegated listener
+  // (bindActions below) — never by an inline onclick="…" string. An event-handler attribute is
+  // character-reference-decoded during HTML tokenization and only *then* compiled as JS, so
+  // App.esc (an HTML-text escaper) gives zero protection inside one: an interpolated `&#39;`
+  // arrives at the compiler as a live apostrophe and closes the string literal. Data attributes
+  // are never compiled, so escaping them is sufficient. (2026-08 audit, AIU-03.)
   function linkBadges(s) {
     if (!s.links) return '<span class="muted">none</span>';
     return s.links.split(';').map(pair => {
       const [key, source] = pair.split('|');
       const k = App.esc(key), sid = App.esc(s.id);
       const confirm = source === 'auto'
-        ? `<a href="#" title="Confirm this link" onclick="Views.sessions.confirm('${sid}','${k}');return false">✓</a>`
+        ? `<a href="#" title="Confirm this link" data-sess-act="confirm" data-sess-id="${sid}" data-sess-key="${k}">✓</a>`
         : '';
       return `<span class="badge ${App.esc(source)}" title="${App.esc(source)}">${k} ${confirm}
-        <a href="#" title="Remove link" onclick="Views.sessions.unlink('${sid}','${k}');return false">×</a></span>`;
+        <a href="#" title="Remove link" data-sess-act="unlink" data-sess-id="${sid}" data-sess-key="${k}">×</a></span>`;
     }).join(' ');
   }
 
   function rowActions(s) {
     const sid = App.esc(s.id);
     const dismiss = s.reviewState === 'not_ticket_related'
-      ? `<button class="btn btn-small" onclick="Views.sessions.reopen('${sid}')">Reopen</button>`
-      : `<button class="btn btn-small" title="Mark as not ticket-related" onclick="Views.sessions.dismiss('${sid}')">Dismiss</button>`;
+      ? `<button class="btn btn-small" data-sess-act="reopen" data-sess-id="${sid}">Reopen</button>`
+      : `<button class="btn btn-small" title="Mark as not ticket-related" data-sess-act="dismiss" data-sess-id="${sid}">Dismiss</button>`;
     return `<div style="display:flex;gap:4px;align-items:center">
       <input id="assign-${sid}" placeholder="ABC-123" style="width:90px;padding:3px 6px;font-size:12px"
-             onkeydown="if(event.key==='Enter')Views.sessions.assign('${sid}')">
-      <button class="btn btn-small" onclick="Views.sessions.assign('${sid}')">Assign</button>
+             data-sess-act="assign-input" data-sess-id="${sid}">
+      <button class="btn btn-small" data-sess-act="assign" data-sess-id="${sid}">Assign</button>
       ${dismiss}
     </div>`;
   }
 
+  function onClick(e) {
+    const t = e.target && e.target.closest ? e.target.closest('[data-sess-act]') : null;
+    if (!t) return;
+    const d = t.dataset;
+    const api = window.Views.sessions;
+    switch (d.sessAct) {
+      case 'filter': e.preventDefault(); api.setFilter(d.sessFilter); break;
+      case 'export': e.preventDefault(); App.exportExcel('export.sessions'); break;
+      case 'assign': e.preventDefault(); api.assign(d.sessId); break;
+      case 'confirm': e.preventDefault(); api.confirm(d.sessId, d.sessKey); break;
+      case 'unlink': e.preventDefault(); api.unlink(d.sessId, d.sessKey); break;
+      case 'dismiss': e.preventDefault(); api.dismiss(d.sessId); break;
+      case 'reopen': e.preventDefault(); api.reopen(d.sessId); break;
+      case 'back': e.preventDefault(); window.Views.session.back(); break;
+      default: break;   // 'assign-input' is keyboard-only
+    }
+  }
+
+  function onKeydown(e) {
+    if (e.key !== 'Enter') return;
+    const t = e.target;
+    if (t && t.dataset && t.dataset.sessAct === 'assign-input') {
+      e.preventDefault();
+      window.Views.sessions.assign(t.dataset.sessId);
+    }
+  }
+
+  // Attach the delegated listeners once per container element (the router reuses #content across
+  // renders, so re-attaching on every render would stack duplicate handlers). Shared with the
+  // session detail view, which renders the same badges and assign row.
+  function bindActions(el) {
+    if (!el || el._sessActionsBound) return;
+    el._sessActionsBound = true;
+    el.addEventListener('click', onClick);
+    el.addEventListener('keydown', onKeydown);
+  }
+
   async function load(el) {
+    bindActions(el);
     let sessions;
     try {
       sessions = await Bridge.call('sessions.list', { filter });
@@ -66,13 +110,13 @@ window.Views.sessions = (function () {
     }
 
     const tabs = TABS.map(t =>
-      `<button class="btn ${t.id === filter ? 'active' : ''}" onclick="Views.sessions.setFilter('${t.id}')">${t.label}</button>`
+      `<button class="btn ${t.id === filter ? 'active' : ''}" data-sess-act="filter" data-sess-filter="${t.id}">${t.label}</button>`
     ).join('');
     const controls = `
       <div style="display:flex;align-items:center;margin-bottom:14px">
         <div class="tabs" style="margin:0">${tabs}</div>
         <span style="flex:1"></span>
-        <button class="btn" onclick="App.exportExcel('export.sessions')">⬇ Export to Excel</button>
+        <button class="btn" data-sess-act="export">⬇ Export to Excel</button>
       </div>`;
 
     if (!sessions.length) {
@@ -84,7 +128,7 @@ window.Views.sessions = (function () {
     const rows = sessions.map(s => `
       <tr>
         <td>
-          <a class="session-link" href="#session/${App.esc(s.id)}" title="View session detail">${App.esc(s.title || '(untitled session)')}</a>
+          <a class="session-link" href="#session/${encodeURIComponent(s.id)}" title="View session detail">${App.esc(s.title || '(untitled session)')}</a>
           <div class="muted" style="font-size:11.5px">${App.esc(projectName(s.projectDir))}
             ${s.reviewState === 'pending' ? '<span class="badge pending">needs review</span>' : ''}</div>
         </td>
@@ -124,6 +168,7 @@ window.Views.sessions = (function () {
 
   return {
     render: load,
+    bindActions,
     setFilter(f) { filter = f; App.refresh(); },
     assign(sessionId) {
       const input = document.getElementById('assign-' + sessionId);

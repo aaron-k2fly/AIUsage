@@ -34,6 +34,9 @@ window.Views.session = (function () {
     return `<div class="kv-row"><span class="kv-key">${App.esc(label)}</span><span class="kv-val">${value}</span></div>`;
   }
 
+  // Badge/assign actions use data-* attributes dispatched by the shared delegated listener in
+  // sessions.js — NOT inline onclick strings, where App.esc cannot protect a JS string literal
+  // (the attribute is entity-decoded before it is compiled). See AIU-03 in the 2026-08 audit.
   function ticketBadges(links, id) {
     if (!links) return '<span class="muted">No tickets linked</span>';
     const sid = App.esc(id);
@@ -41,10 +44,10 @@ window.Views.session = (function () {
       const [key, source] = pair.split('|');
       const k = App.esc(key);
       const confirm = source === 'auto'
-        ? `<a href="#" title="Confirm this link" onclick="Views.sessions.confirm('${sid}','${k}');return false">✓</a>`
+        ? `<a href="#" title="Confirm this link" data-sess-act="confirm" data-sess-id="${sid}" data-sess-key="${k}">✓</a>`
         : '';
       return `<span class="badge ${App.esc(source)}" title="${App.esc(source)}">${k} ${confirm}
-        <a href="#" title="Remove link" onclick="Views.sessions.unlink('${sid}','${k}');return false">×</a></span>`;
+        <a href="#" title="Remove link" data-sess-act="unlink" data-sess-id="${sid}" data-sess-key="${k}">×</a></span>`;
     }).join(' ');
   }
 
@@ -162,6 +165,7 @@ window.Views.session = (function () {
   }
 
   async function render(el, sessionId) {
+    Views.sessions.bindActions(el);   // one delegated click/keydown listener, attached once
     if (!sessionId) {
       el.innerHTML = `<div class="panel empty">No session selected. <a href="#sessions">Back to Sessions</a></div>`;
       return;
@@ -171,13 +175,13 @@ window.Views.session = (function () {
     try {
       d = await Bridge.call('sessions.detail', { sessionId });
     } catch (e) {
-      el.innerHTML = `<a class="back-link" href="#" onclick="Views.session.back();return false">← Back</a>
+      el.innerHTML = `<a class="back-link" href="#" data-sess-act="back">← Back</a>
         <div class="panel empty">Failed to load session: ${App.esc(e.message)}</div>`;
       return;
     }
 
     const head = `<div class="detail-top">
-      <a class="back-link" href="#" onclick="Views.session.back();return false">← Back</a>
+      <a class="back-link" href="#" data-sess-act="back">← Back</a>
       <div class="detail-head">${App.esc(d.title || '(untitled session)')} · <span class="mono">${App.esc(d.id)}</span></div>
     </div>`;
 
@@ -195,8 +199,8 @@ window.Views.session = (function () {
           <div class="ticket-row">${ticketBadges(d.links, d.id)}</div>
           <div class="assign-row">
             <input id="assign-${App.esc(d.id)}" placeholder="ABC-123"
-                   onkeydown="if(event.key==='Enter')Views.sessions.assign('${App.esc(d.id)}')">
-            <button class="btn btn-small" onclick="Views.sessions.assign('${App.esc(d.id)}')">Assign</button>
+                   data-sess-act="assign-input" data-sess-id="${App.esc(d.id)}">
+            <button class="btn btn-small" data-sess-act="assign" data-sess-id="${App.esc(d.id)}">Assign</button>
           </div>
         </div>
       </div>`;

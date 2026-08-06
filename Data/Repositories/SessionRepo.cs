@@ -112,6 +112,7 @@ public static class SessionRepo
 
     public static void AddAutoLink(SqliteConnection conn, string sessionId, string ticketKey, string inferredFrom)
     {
+        ticketKey = TicketKey.Require(ticketKey);
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
             INSERT OR IGNORE INTO Tickets(key) VALUES ($key);
@@ -134,6 +135,9 @@ public static class SessionRepo
     public static void LinkLiveCodeSession(SqliteConnection conn, string sessionId, string filePath,
         string? projectDir, string ticketKey)
     {
+        // Validated here as well as at the handler so no future caller can reintroduce the gap that
+        // made this the only unconstrained writer of ticket_key (2026-08 audit, AIU-04).
+        ticketKey = TicketKey.Require(ticketKey);
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
             INSERT OR IGNORE INTO Sessions (id, file_path, project_dir, review_state)
@@ -155,6 +159,7 @@ public static class SessionRepo
 
     public static void AssignTicket(SqliteConnection conn, string sessionId, string ticketKey)
     {
+        ticketKey = TicketKey.Require(ticketKey);
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
             INSERT OR IGNORE INTO Tickets(key) VALUES ($key);

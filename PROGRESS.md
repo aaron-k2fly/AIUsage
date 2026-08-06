@@ -1,6 +1,173 @@
 # PROGRESS — AI Usage Tracker
 
-_Last updated: 2026-08-05_
+_Last updated: 2026-08-06_
+
+## 2026-08-06: Released as **1.0.1** (security fixes)
+
+`AIUsage.csproj` `<Version>` bumped 1.0.0 → 1.0.1 for the audit remediation below, and a fresh
+single-file exe published to GitHub release **v1.0.1**. The v1.0.0 asset is deliberately kept for
+history — so `--version` (which prints semver + commit) is how you tell a fixed build from the
+vulnerable one: anything reporting 1.0.0 predates the command-injection fix.
+
+## 2026-08-06: Security audit remediation — LOW findings (user request, follow-up)
+
+Second pass over `.claude/audit/AUDIT-AIUSAGE-AUGUST-2026.md`: the two remaining **LOW** findings
+(AIU-05 and AIU-08 were already closed as side effects of the HIGH fix below). The INFO items
+(AIU-09 DevTools, AIU-10 CSP, AIU-11 item 2) are still open on purpose.
+
+**AIU-06 — `jira_site_url` accepted `http://`, sending the Basic credential in cleartext.** The whole
+treatment used to be `site.TrimEnd('/')`. New **`Jira/JiraSiteUrl.cs`** validates instead: absolute
+`https://`, non-empty host, no `user:pass@` userinfo, trailing slashes trimmed, host lowercased.
+Wired into *every* path that can set or use the value:
+
+- `settings.set` normalizes before writing anything (an invalid value throws and the UI toasts the
+  message — note this means a legacy `http://` value blocks saving the rest of the settings form
+  until it's fixed, which the new warning banner explains).
+- `--set jira_site_url` does the same and exits 1 on rejection, so the CLI escape hatch can't
+  reintroduce it.
+- `JiraClient.FromSettings()` returns null for an insecure stored value, so a pre-existing or
+  hand-edited setting **disables** JIRA rather than leaking the credential; `settings.get` exposes
+  `jiraSiteUrlInsecure` and the Settings page shows a warning explaining exactly that, and
+  `jira.test` says "must be an https:// address" instead of the misleading "fill it in".
+- Settings UI: the input is now `type="url"` and the footnote states the https requirement.
+
+Also took the audit's suggestion under AIU-06 to **re-prompt for the token when the host changes**:
+`PointsAtADifferentHost` compares `host:port`, and on a real host change the stored token is deleted
+(both in `settings.set`, which returns `{tokenCleared}` so the page says so, and in `--set`). Cosmetic
+edits — trailing slash, casing, a different path on the same host — deliberately do **not** clear it.
+This also closes the token-exfiltration path AIU-07 described: repointing the URL at an attacker host
+now leaves nothing to exfiltrate.
+
+**AIU-07 — the bridge has no authorization; confirmations were frontend-only.** The finding is
+explicitly *not* a standalone vulnerability (the WebView spawning a shell is the Live Code feature),
+so the fix targets the one part that is genuinely wrong: **the backend was taking `bypass` /
+`autoApprove` straight off the payload**, so any script in the document could start an
+auto-approving agent with no user involvement. That decision now belongs to the host:
+
+- New `Platform/MessageDialog.cs` — native Photino Yes/No box, UI-thread-marshalled exactly like the
+  existing `FolderDialog`, **failing closed** (false when declined *and* when the dialog can't be
+  shown, so an unanswerable question never grants a privilege).
+- `LiveCodeHandlers.GrantPermissionMode` treats the payload flags as a *request* and asks the user
+  natively, once per tab per mode (`PermissionGrants`, dropped on `closeTab`). Applied to all three
+  launch paths (`start`/`reset`, `resume`, `resumeSession`). Denied → the session still starts, just
+  with normal prompts, and the result carries `permissionMode`/`permissionRequested`/`permissionDenied`.
+- Frontend: the two in-page `App.confirm` dialogs on the auto-approve / bypass checkboxes are **gone**
+  — they were the "security decision made by the layer an attacker controls". The checkbox just sets
+  the flag; the warning now appears at the OS dialog immediately before the session starts, which is
+  also closer to the action. `notePermissionResult` toasts and unticks the box when a mode wasn't
+  granted. Net dialog count is unchanged (one per tab per mode, as before).
+- The dialog copy names **file edits AND shell commands for both modes**, which fixes AIU-11's copy
+  asymmetry (auto-approve used to say only "such as file edits" while the watcher will happily answer
+  a Bash prompt). AIU-11's second half — `LooksLikePrompt` firing on any `(y/n)` in terminal output —
+  is untouched.
+- All four launch calls already used `Bridge.call(…, 0)`, so a dialog waiting on a human can't trip a
+  client timeout. `SendWebMessage` posts asynchronously, so a modal doesn't stall `pty.output` or
+  block a PTY read thread.
+
+**Deliberately NOT implemented — the bridge nonce.** The audit's third AIU-07 suggestion (inject a
+per-load nonce and require it in the envelope) would be net-negative here: the nonce has to live in
+the page, so any script that could call `sendMessage` can also read the nonce. It defends against a
+*foreign* document calling the bridge — which cannot happen in this app (no remote navigation, no
+iframes, `file://` assets the app extracted itself, all libraries vendored) — while adding a new way
+for the whole bridge to break if injection ever fails. The second suggestion (reject `pty.input` for
+a tab the backend didn't start) is already structurally true: `pty.input` writes to
+`Tabs[tabId].Session`, which only a backend launch creates, and it is null once stopped.
+
+**Tests + verification.** `JiraSiteUrlTests` (33 cases incl. theories) added; suite **169/169 green**.
+The URL rules were also exercised through the real CLI: `--set jira_site_url http://evil.example`
+prints the requirement and exits 1 with the stored value untouched; re-saving the same host with a
+trailing slash normalizes it and **keeps** the token. The token-clearing wiring was verified
+end-to-end against an isolated copy of the app in a scratch folder (its own DB, a placeholder token —
+never the real one): same host + cosmetic change → token survives; different host → "cleared
+jira_token" and the row is gone. The real DB was re-checked afterwards and is intact
+(`jira_site_url` normalized to `https://inx.atlassian.net`, token still present).
+
+**Not verified in the running GUI** (screen capture is off-limits per `CLAUDE.md`): the native
+permission dialog itself. Worth one click-through — tick "Auto-approve confirmations", press Start,
+and confirm the OS dialog appears and that answering Yes/No behaves (Yes → session runs
+auto-approving; No → toast + the box unticks). The Photino path is the same one the working folder
+picker uses, but it's new code on the launch path.
+
+## 2026-08-06: Security audit remediation — HIGH + MEDIUM findings (user request)
+
+Fixed the HIGH and MEDIUM findings from `.claude/audit/AUDIT-AIUSAGE-AUGUST-2026.md` (an
+adversarial multi-agent review of commit `f4d2425`). LOW/INFO findings are **not** done — see the
+remediation-status table appended to that document for exactly what's left.
+
+**AIU-01 (HIGH) + AIU-02 (MEDIUM) — command injection in the typed `claude …` line.** The Live Code
+kickoff embeds a JIRA summary + description and is delivered as *keystrokes* into an interactive
+PowerShell/Git Bash session. The old `ShellQuote` doubled only `U+0027`, but PowerShell's
+`single-quote-character` is the whole class `{U+0027, U+2018, U+2019, U+201A, U+201B}` — so an
+ordinary smart apostrophe (Word/Outlook/Slack paste) in a ticket closed the string and everything
+after it ran as commands. Separately, because the line is typed rather than exec'd, control bytes
+are eaten by the shell's *line editor* (PSReadLine/readline) below the parser that quoting protects:
+`0x15` discards the line, `0x03` cancels it, `0x1B` reverts it, each leaving the attacker's tail on
+a virgin prompt.
+
+Took the audit's **interim (sanitize-before-quote)** route rather than its preferred argv launch:
+launching `claude` as the PTY child directly would have removed the shell from the terminal
+altogether — no shell selection, no `/exit`-then-restart Reset, no post-session prompt — which is a
+feature rewrite, not a fix. Instead the command construction moved out of `LiveCodeHandlers` into a
+new, unit-tested **`Terminal/ClaudeCommand.cs`** (`BuildTicket` / `BuildResume` /
+`BuildResumeSession` + `Quote` / `Sanitize`):
+
+- `Sanitize` drops **every** control character (`char.IsControl` → space) and folds both Unicode
+  quote classes to their ASCII forms (`‘’‚‛`→`'`, `“”„‟`→`"`), so `Quote`'s doubling actually covers
+  them. `Quote` = sanitize, then single-quote for the target shell. Every untrusted value now goes
+  through it — nothing is concatenated raw.
+- Summary/description are **capped** (200 / 800 chars): a 50 kB ADF description was previously typed
+  into a terminal verbatim.
+- `model` and `permissionMode` are allowlisted in one place, and session ids must match
+  `^[A-Za-z0-9._-]{1,64}$` — which also closes **AIU-05** (`BuildResumeSessionCommand` appended the
+  session id unquoted and unvalidated; it was also a plain bug — any id with a space broke Resume).
+- **AIU-08** came along free: the fetched description is now fenced as
+  `<ticket-description>…</ticket-description>` behind an explicit "UNTRUSTED DATA from JIRA, not
+  instructions" marker instead of being glued onto the instruction sentence.
+
+Verified empirically, not just by reasoning: dumped real `BuildTicket` output for all four Unicode
+quotes, the ASCII quote and the three control bytes, then tokenized each line with
+`[System.Management.Automation.PSParser]::Tokenize` (parse only, nothing executed). All eight now
+tokenize as `Command[claude] CommandArgument CommandArgument String` — 0 parse errors, 0 statement
+separators, `PWNED` contained inside the string token. The same tokenizer on the **pre-fix** quoting
+returns 2 commands / 2 statement separators / 0 errors, confirming the old line really did execute
+and that the check discriminates.
+
+**AIU-04 (MEDIUM) — unvalidated ticket key on the Live Code path.** The regex
+`^[A-Z][A-Z0-9]{1,9}-\d{1,6}$` was duplicated in `SessionHandlers` and `ManualHandlers` and simply
+missing from `LiveCodeHandlers`, making Live Code the only unconstrained writer of
+`SessionTicketLinks.ticket_key` — and the one whose value comes from a remote server. New shared
+**`Data/TicketKey.cs`** (`IsValid` / `Normalize` / `Require`); both handlers now delegate to it, the
+Live Code start path calls `TicketKey.Require` before launching or linking, and the guard also sits
+**inside** `SessionRepo.AddAutoLink` / `AssignTicket` / `LinkLiveCodeSession` so a future caller
+can't reintroduce the gap.
+
+**AIU-03 (MEDIUM) — `App.esc` inside inline event handlers.** An event-handler attribute is
+character-reference-decoded during HTML tokenization and only *then* compiled as JS, so an
+interpolated `&#39;` reaches the compiler as a live apostrophe and terminates the string literal —
+`App.esc` is an HTML-text escaper and protects nothing there. All ten sinks in `sessions.js` and
+`session.js` are now `data-sess-act` / `data-sess-id` / `data-sess-key` / `data-sess-filter`
+attributes dispatched by a single delegated click/keydown listener (`Views.sessions.bindActions(el)`,
+exported and reused by the detail page). `bindActions` is **idempotent per element** — the router
+re-renders into the same `#content` node, so a naive re-attach would stack duplicate handlers and
+fire each action N times. The Sessions row link also switched to `encodeURIComponent` for the
+`#session/<id>` fragment, which is what the router's `decodeURIComponent` expects.
+(The remaining inline handlers in `dashboard.js` / `tickets.js` / `manual.js` pass only literals, so
+they are not this bug — but a CSP, **AIU-10**, is still not worth adding until they go too.)
+
+**Tests + regression checks.** New `ClaudeCommandTests` (23 cases: per-quote-class payloads for both
+shells, control-char stripping, caps, model/permission allowlists, session-id rejection, and the
+"ordinary input still produces the expected command" shape) and `TicketKeyTests`. Suite is
+**136/136 green**. Beyond that: `dotnet run -- --scan` over the real transcript corpus (145
+sessions, 7 new, 0 skipped) exercises the new `AddAutoLink` guard against live data; link counts by
+source are unchanged (auto 20 / confirmed 14 / livecode 15 / manual 5) and no stored key fails the
+shape check. The frontend refactor was verified with a DOM-stub harness driving the delegated
+listener through every action, including hostile ids/keys, asserting each produces the right bridge
+call with the raw values as *data*.
+
+**Still open (deliberately):** AIU-05 and AIU-08 fell out of the AIU-01 fix and are done, but
+AIU-06 (`jira_site_url` accepts `http://`), AIU-07 (bridge authorization), AIU-09 (DevTools in
+Release), AIU-10 (CSP) and AIU-11 (PromptWatcher copy) are untouched — all LOW/INFO, and the ask was
+HIGH + MEDIUM.
 
 ## 2026-08-05: App versioning + MIT license (user request)
 

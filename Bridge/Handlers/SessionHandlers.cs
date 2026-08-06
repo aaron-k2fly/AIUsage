@@ -1,5 +1,4 @@
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using AIUsage.Data;
 using AIUsage.Data.Repositories;
 using AIUsage.Scanner;
@@ -8,9 +7,6 @@ namespace AIUsage.Bridge.Handlers;
 
 public static partial class SessionHandlers
 {
-    [GeneratedRegex(@"^[A-Z][A-Z0-9]{1,9}-\d{1,6}$")]
-    private static partial Regex TicketKeyRegex();
-
     public static void Register(MessageRouter router)
     {
         // Handlers run synchronously on the pool thread MessageRouter.OnMessage already
@@ -187,10 +183,7 @@ public static partial class SessionHandlers
     {
         var sessionId = GetString(payload, "sessionId")
             ?? throw new ArgumentException("sessionId is required");
-        var ticketKey = (GetString(payload, "ticketKey") ?? "").Trim().ToUpperInvariant();
-        if (!TicketKeyRegex().IsMatch(ticketKey))
-            throw new ArgumentException($"'{ticketKey}' is not a valid ticket key (expected e.g. SFTY-1234)");
-        return (sessionId, ticketKey);
+        return (sessionId, TicketKey.Require(GetString(payload, "ticketKey")));
     }
 
     internal static string? GetString(JsonElement payload, string name) =>

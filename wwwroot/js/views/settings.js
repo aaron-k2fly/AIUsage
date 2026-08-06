@@ -12,13 +12,18 @@ window.Views.settings = (function () {
     el.innerHTML = `<h1>Settings</h1>
       <div class="panel form-narrow">
         <h2>JIRA (read-only)</h2>
+        ${s.jiraSiteUrlInsecure ? `<div class="lc-warn" style="border:1px solid #f0c98a;border-radius:6px;padding:8px 10px;margin-bottom:12px;align-items:flex-start">⚠ The saved site URL is not an
+          <strong>https://</strong> address, so JIRA is disabled — your email and API token would otherwise be sent
+          in cleartext on every request. Enter an https:// URL and save.</div>` : ''}
         <label>Site URL</label>
-        <input id="set-site" placeholder="https://yourcompany.atlassian.net" value="${App.esc(s.jiraSiteUrl)}">
+        <input id="set-site" type="url" placeholder="https://yourcompany.atlassian.net" value="${App.esc(s.jiraSiteUrl)}">
         <label>Email</label>
         <input id="set-email" placeholder="you@example.com" value="${App.esc(s.jiraEmail)}">
         <label>API token ${s.jiraTokenSet ? '<span class="badge confirmed">set</span>' : '<span class="badge dead">not set</span>'}</label>
         <input id="set-token" type="password" placeholder="${s.jiraTokenSet ? 'leave empty to keep current token' : 'paste a JIRA API token'}">
-        <div class="footnote">Stored DPAPI-encrypted for your Windows user. Create tokens at id.atlassian.com → Security → API tokens.</div>
+        <div class="footnote">Stored DPAPI-encrypted for your Windows user. Create tokens at id.atlassian.com → Security → API tokens.
+          Must be an <strong>https://</strong> site URL — the token is sent as a reversible Basic credential on every request.
+          Pointing the site URL at a <em>different host</em> clears the stored token, so it can never be replayed to a new server.</div>
         <label>JQL for “Fetch more from JIRA” (imports tickets into the Tickets list)</label>
         <input id="set-fetch-jql" value="${App.esc(s.jiraFetchJql)}">
         <div style="margin-top:12px; display:flex; gap:8px">
@@ -66,8 +71,10 @@ window.Views.settings = (function () {
         livecodeTicketCount: document.getElementById('set-lc-ticket-count').value
       };
       try {
-        await Bridge.call('settings.set', payload);
-        App.toast('Settings saved');
+        const r = await Bridge.call('settings.set', payload);
+        App.toast(r && r.tokenCleared
+          ? 'Settings saved — the site URL now points at a different host, so the stored API token was cleared. Paste a token for the new host.'
+          : 'Settings saved');
         App.refresh();
       } catch (e) {
         App.toast(e.message, true);
