@@ -1,24 +1,44 @@
 // Session detail page (#session/<id>). Reached by clicking a row on the Sessions list.
 // Data comes from `sessions.detail`, which re-parses the one transcript on demand for the
 // exact per-tool / per-model breakdown the list doesn't store. Cost is derived here from a
-// model-family rate table so the $/Mtok footnote lives next to the numbers it explains.
+// per-model-version rate table so the $/Mtok footnote lives next to the numbers it explains.
 window.Views = window.Views || {};
 window.Views.session = (function () {
-  // $ per million tokens, by model family (Claude public list prices).
+  // $ per million tokens — Anthropic public list prices, checked 2026-09-09. Keyed by family,
+  // then by the lowest model version that price applies to (descending): Anthropic re-prices
+  // within a family (Opus went 15/75 → 5/25 at 4.5, Sonnet 3/15 → 2/10 at 5), so a family-only
+  // lookup mis-costs older transcripts — and this app scans years of them.
+  // Cache-write is 1.25× input and cache-read 0.1× input everywhere except Fable/Mythos 5.1 (0.025×).
   const RATES = {
-    opus:   { in: 15,  out: 75, cacheWrite: 18.75, cacheRead: 1.5  },
-    sonnet: { in: 3,   out: 15, cacheWrite: 3.75,  cacheRead: 0.3  },
-    haiku:  { in: 0.8, out: 4,  cacheWrite: 1.0,   cacheRead: 0.08 }
+    fable:  [[5.1, { in: 10,   out: 50,   cacheWrite: 12.5,  cacheRead: 0.25 }],
+             [0,   { in: 10,   out: 50,   cacheWrite: 12.5,  cacheRead: 1.0  }]],
+    opus:   [[4.5, { in: 5,    out: 25,   cacheWrite: 6.25,  cacheRead: 0.5  }],
+             [0,   { in: 15,   out: 75,   cacheWrite: 18.75, cacheRead: 1.5  }]],
+    sonnet: [[5,   { in: 2,    out: 10,   cacheWrite: 2.5,   cacheRead: 0.2  }],
+             [0,   { in: 3,    out: 15,   cacheWrite: 3.75,  cacheRead: 0.3  }]],
+    haiku:  [[4.5, { in: 1,    out: 5,    cacheWrite: 1.25,  cacheRead: 0.1  }],
+             [3.5, { in: 0.8,  out: 4,    cacheWrite: 1.0,   cacheRead: 0.08 }],
+             [0,   { in: 0.25, out: 1.25, cacheWrite: 0.3,   cacheRead: 0.03 }]]
   };
+  const FREE = { in: 0, out: 0, cacheWrite: 0, cacheRead: 0 };
   const REVIEW = { pending: 'needs review', linked: 'linked', not_ticket_related: 'not ticket-related' };
   // Distinct colours for the tool-mix segments (one per tool, in count order).
   const TOOL_COLORS = ['#4f6df5', '#9bb0f8', '#c86b9b', '#2e9e5b', '#d9822b', '#7c6cd6', '#38b2b2', '#c3c9d6'];
 
-  function familyOf(model) {
+  // Model id → its rate row. Transcripts carry two id shapes — `claude-opus-4-8` and the older
+  // `claude-3-5-haiku-20241022` — so the version is read as the first two numeric groups after
+  // dropping any trailing yyyymmdd stamp, which lands on 4.8 / 3.5 for both. An id with no
+  // digits (a bare `opus` alias, or a missing model) prices as the newest tier in its family.
+  function rateFor(model) {
     const m = (model || '').toLowerCase();
-    if (m.includes('haiku')) return 'haiku';
-    if (m.includes('sonnet')) return 'sonnet';
-    return 'opus';
+    if (m.includes('synthetic')) return FREE; // Claude Code's placeholder turn — no API call, no cost
+    const fam = m.includes('haiku') ? 'haiku'
+      : m.includes('sonnet') ? 'sonnet'
+      : (m.includes('fable') || m.includes('mythos')) ? 'fable'
+      : 'opus'; // unrecognised ids price as current Opus
+    const nums = m.replace(/-\d{8}$/, '').match(/\d+/g) || [];
+    const ver = nums.length ? parseFloat(nums[0] + '.' + (nums[1] || 0)) : Infinity;
+    return RATES[fam].find(([min]) => ver >= min)[1];
   }
   function shortModel(m) { return (m || '').replace(/^claude-/, '') || 'unknown'; }
   function money(n) { return '$' + (n || 0).toFixed(2); }
@@ -100,7 +120,7 @@ window.Views.session = (function () {
       ? d.models
       : [{ model: d.model, input: d.inputTokens, output: d.outputTokens, cacheCreation: d.cacheCreationTokens, cacheRead: d.cacheReadTokens }];
     for (const m of models) {
-      const r = RATES[familyOf(m.model)];
+      const r = rateFor(m.model);
       input += (m.input || 0) * r.in / 1e6;
       output += (m.output || 0) * r.out / 1e6;
       cacheWrite += (m.cacheCreation || 0) * r.cacheWrite / 1e6;
@@ -110,7 +130,7 @@ window.Views.session = (function () {
     const cacheDenom = (d.cacheReadTokens || 0) + (d.cacheCreationTokens || 0);
     const cacheHit = cacheDenom ? (d.cacheReadTokens || 0) / cacheDenom : 0;
     const t = total || 1;
-    const r = RATES[familyOf(d.model)];
+    const r = rateFor(d.model);
 
     const bar = (label, cls, cost) => `
       <div class="cost-row">
