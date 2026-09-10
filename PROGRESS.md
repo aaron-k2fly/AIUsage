@@ -1,6 +1,25 @@
 # PROGRESS — AI Usage Tracker
 
-_Last updated: 2026-09-09_
+_Last updated: 2026-09-10_
+
+## 2026-09-10: Published **v1.0.1** to GitHub Releases
+
+`v1.0.1` is out, built from `673735a` (main, after the cost rate-table PR merged): single-file
+self-contained win-x64 exe, 40.3 MB, `--version` → `1.0.1 / commit 673735a / built 2026-09-10`. It
+carries the August security remediation (AIU-01/AIU-02 command injection, AIU-03, AIU-04, AIU-06,
+AIU-07) **and** the session-cost fix below. No version bump was needed: 1.0.1 had been allocated for
+the audit work but never shipped, so the number was still free.
+
+`v1.0.0` is no longer flagged Latest, and its notes now open with a superseded warning — it predates
+the command-injection fix. Its asset is kept for history; `--version` (semver + commit) is how you
+tell the two builds apart.
+
+Gotchas hit while releasing:
+
+- `gh release create --target <short-sha>` fails with `HTTP 422 … Release.target_commitish is invalid`.
+  Pass the **full** 40-char SHA (or a branch name).
+- The publish folder holds the portable `aiusage.db` beside the exe, so attach **`AIUsage.exe` only**
+  as the release asset — never the folder (that DB is real session data).
 
 ## 2026-09-09: Session-detail cost — rate table refreshed and made version-aware
 
@@ -36,12 +55,12 @@ the allowlist silently drops an unknown value rather than erroring); and `Sessio
 is a two-way branch (haiku → 200K, else 1M). The scanner itself is model-agnostic — it stores whatever
 id the transcript carries.
 
-## 2026-08-06: Version bumped to **1.0.1** — release NOT published yet
+## 2026-08-06: Version bumped to **1.0.1** — published 2026-09-10 (see the top entry)
 
 `AIUsage.csproj` `<Version>` is 1.0.1 for the audit remediation below, so the number is already right
-whenever a build ships. **No GitHub release was cut**: `v1.0.0` is still the latest published asset,
-and it is the **vulnerable** build (it predates the command-injection fix). Publish when ready — the
-`--version` output (semver + commit) is what distinguishes the two.
+when the build shipped. **No GitHub release was cut at the time**: `v1.0.0` remained the latest
+published asset — the **vulnerable** build, predating the command-injection fix. Published as
+**v1.0.1** on 2026-09-10 (see the top entry); `--version` (semver + commit) distinguishes the two.
 
 Gotcha found while publishing: the documented deliverable path
 (`bin\Release\net10.0\win-x64\publish\AIUsage.exe`) is **locked while the app is running from it** —
