@@ -1,6 +1,40 @@
 # PROGRESS — AI Usage Tracker
 
-_Last updated: 2026-08-06_
+_Last updated: 2026-09-09_
+
+## 2026-09-09: Session-detail cost — rate table refreshed and made version-aware
+
+The **Token cost** card priced every session off a three-row family table (`opus`/`sonnet`/`haiku`)
+whose numbers were Claude-3-era: Opus $15/$75, Sonnet $3/$15, Haiku $0.80/$4. Two silent problems:
+
+- **Stale rates.** Current list prices are Opus (4.5+) $5/$25, Sonnet 5 $2/$10, Haiku 4.5 $1/$5. Every
+  Opus session — 65 of the 145 in the local DB — was costed ~3x high.
+- **No slot for Fable.** `familyOf()` returned `'opus'` for anything not haiku/sonnet, so
+  `claude-fable-5` sessions were priced at Opus rates (about half of Fable's $10/$50), and
+  `<synthetic>` turns — Claude Code's placeholder messages, no API call — were billed as Opus too.
+
+`RATES` is now family → `[minVersion, rates]` rows in descending order, and `rateFor(model)` picks the
+row. Anthropic re-prices *within* a family (Opus 15/75 → 5/25 at 4.5, Sonnet 3/15 → 2/10 at 5, Fable's
+cache-read 1.0 → 0.25 at 5.1), so a family-only lookup mis-costs exactly the older transcripts this app
+exists to scan. The version is read as the first two numeric groups after dropping a trailing
+`-yyyymmdd`, which lands correctly on both transcript id shapes (`claude-opus-4-8` → 4.8,
+`claude-3-5-haiku-20241022` → 3.5). `<synthetic>` is zero-rated; an id with no digits (a bare `opus`
+alias, or a missing model) prices as the newest tier in its family, and an unrecognised family as
+current Opus. Cache-write stays 1.25x input and cache-read 0.1x input, except Fable/Mythos 5.1 (0.025x).
+
+Verified: a 22-case check run against the **real source text** of `RATES` + `rateFor` sliced out of
+`session.js` (scratchpad harness — the repo has no JS test runner) covering every model id present in
+the local DB (`claude-opus-4-8`, `claude-sonnet-5`, `claude-sonnet-4-6`, `claude-opus-5`,
+`claude-fable-5`, `claude-haiku-4-5-20251001`, `<synthetic>`, NULL) plus legacy, dated and alias
+shapes — all 22 pass. `node --check` clean. UI not re-screenshotted (frontend-only arithmetic change).
+
+**Deliberately not touched** — the other places that know model identity, listed here so the next new
+model release is a known quantity: the Live Code model dropdown (`livecode.js` `MODELS`) and its
+`--model` allowlist (`ClaudeCommand.cs` `Models`) are family *aliases*, so a new release within
+Opus/Sonnet/Haiku/Fable is resolved by Claude Code itself — only a brand-new family needs an edit (and
+the allowlist silently drops an unknown value rather than erroring); and `SessionAggregator.ContextWindow`
+is a two-way branch (haiku → 200K, else 1M). The scanner itself is model-agnostic — it stores whatever
+id the transcript carries.
 
 ## 2026-08-06: Version bumped to **1.0.1** — release NOT published yet
 
